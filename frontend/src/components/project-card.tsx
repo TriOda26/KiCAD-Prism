@@ -1,10 +1,11 @@
-import { Project } from "@/types/project";
+import { Project, FolderTreeItem } from "@/types/project";
 import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CalendarDays, Box, Trash2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import React from "react";
+import { ProjectActions } from "./project-actions";
 
 interface ProjectCardProps {
     project: Project;
@@ -13,6 +14,8 @@ interface ProjectCardProps {
     onDelete?: () => void;
     showDelete?: boolean;
     searchQuery?: string;
+    folders?: FolderTreeItem[];
+    onMoveToFolder?: (projectId: string, folderId: string | null) => void;
 }
 
 // Highlight matched text in search results
@@ -36,7 +39,7 @@ function highlightMatch(text: string, query: string): React.ReactNode {
     );
 }
 
-export function ProjectCard({ project, compact, onClick, onDelete, showDelete, searchQuery = "" }: ProjectCardProps) {
+export function ProjectCard({ project, compact, onClick, onDelete, showDelete, searchQuery = "", folders = [], onMoveToFolder }: ProjectCardProps) {
     const navigate = useNavigate();
 
     const thumbnailUrl = project.thumbnail_url ? project.thumbnail_url : null;
@@ -78,6 +81,25 @@ export function ProjectCard({ project, compact, onClick, onDelete, showDelete, s
                         </h3>
                         <p className="text-xs text-muted-foreground">{project.last_modified}</p>
                     </div>
+                    {showDelete && onDelete && (
+                        <ProjectActions
+                            project={project}
+                            folders={folders}
+                            onMoveToFolder={onMoveToFolder || (() => {})}
+                            onDelete={onDelete}
+                        >
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                }}
+                            >
+                                <Trash2 className="h-4 w-4" />
+                            </Button>
+                        </ProjectActions>
+                    )}
                 </div>
             </Card>
         );
@@ -110,17 +132,23 @@ export function ProjectCard({ project, compact, onClick, onDelete, showDelete, s
                         Git
                     </Badge>
                     {showDelete && onDelete && (
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-6 w-6 bg-background/80 backdrop-blur-sm hover:bg-destructive hover:text-destructive-foreground"
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                onDelete();
-                            }}
+                        <ProjectActions
+                            project={project}
+                            folders={folders}
+                            onMoveToFolder={onMoveToFolder || (() => {})}
+                            onDelete={onDelete}
                         >
-                            <Trash2 className="h-3 w-3" />
-                        </Button>
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 bg-background/80 backdrop-blur-sm hover:bg-destructive hover:text-destructive-foreground"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                }}
+                            >
+                                <Trash2 className="h-3 w-3" />
+                            </Button>
+                        </ProjectActions>
                     )}
                 </div>
             </div>

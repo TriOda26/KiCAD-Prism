@@ -1,6 +1,10 @@
 import os
 import datetime
 import shutil
+import uuid
+import time
+import threading
+import subprocess
 from git import Repo, RemoteProgress
 from typing import List, Optional, Dict
 from pydantic import BaseModel
@@ -20,6 +24,14 @@ class Project(BaseModel):
     repo_url: Optional[str] = None  # Original Git URL
     import_type: Optional[str] = None  # "type1" or "type2_subproject"
     parent_repo_path: Optional[str] = None  # Path to parent repo for Type-2
+    folder_id: Optional[str] = None  # Folder ID for organization
+
+class Folder(BaseModel):
+    id: str
+    name: str
+    parent_folder_id: Optional[str] = None
+    created_at: str
+    expanded: bool = True  # UI state for folder tree
 
 # PROJECTS_ROOT is where imported projects are stored.
 # In Docker, this should be a persistent volume mount.
@@ -56,19 +68,209 @@ def _save_project_registry(registry: Dict[str, dict]) -> None:
     except IOError as e:
         print(f"Warning: Failed to save project registry: {e}")
 
-def register_project(project_id: str, name: str, path: str, repo_url: str,
-                     sub_path: Optional[str] = None, parent_repo: Optional[str] = None,
-                     description: Optional[str] = None) -> None:
-    """Register a project in the registry."""
+def _load_folders(registry: Dict[str, dict]) -> Dict[str, dict]:
+    """Load folders from registry."""
+    return registry.get("_folders", {})
+
+def _save_folders(registry: Dict[str, dict], folders: Dict[str, dict]) -> None:
+    """Save folders to registry."""
+    registry["_folders"] = folders
+
+def get_all_folders() -> List[Folder]:
+    """Get all folders as a flat list."""
+    registry = _load_project_registry()
+    folders_data = _load_folders(registry)
+    
+    folders = []
+    for folder_id, data in folders_data.items():
+        folders.append(Folder(
+            id=folder_id,
+            name=data.get("name", "Untitled"),
+            parent_folder_id=data.get("parent_folder_id"),
+            created_at=data.get("created_at", datetime.datetime.now().isoformat()),
+            expanded=data.get("expanded", True)
+        ))
+    return folders
+
+def create_folder(name: str, parent_folder_id: Optional[str] = None) -> Folder:
+    """Create a new folder."""
+    registry = _load_project_registry()
+    folders_data = _load_folders(registry)
+    
+    folder_id = str(uuid.uuid4())
+    folder = Folder(
+        id=folder_id,
+        name=name,
+        parent_folder_id=parent_folder_id,
+        created_at=datetime.datetime.now().isoformat(),
+        expanded=True
+    )
+    
+    folders_data[folder_id] = {
+        "name": name,
+        "parent_folder_id": parent_folder_id,
+        "created_at": folder.created_at,
+        "expanded": True
+    }
+    
+    _save_folders(registry, folders_data)
+    _save_project_registry(registry)
+    
+    return folder
+
+def update_folder(folder_id: str, name: Optional[str] = None, parent_folder_id: Optional[str] = None) -> Optional[Folder]:
+    """Update a folder."""
+    registry = _load_project_registry()
+    folders_data = _load_folders(registry)
+    
+    if folder_id not in folders_data:
+        return None
+    
+    if name is not None:
+        folders_data[folder_id]["name"] = name
+    if parent_folder_id is not None:
+        # Prevent circular reference
+        if parent_folder_id == folder_id:
+            raise ValueError("Cannot set folder as its own parent")
+        # Check if new parent is a descendant
+        current = parent_folder_id
+        while current:
+            if current == folder_id:
+                raise ValueError("Cannot move folder into its own descendant")
+            parent = folders_data.get(current, {}).get("parent_folder_id")
+            current = parent
+        
+        folders_data[folder_id]["parent_folder_id"] = parent_folder_id
+    
+    _save_folders(registry, folders_data)
+    _save_project_registry(registry)
+    
+    return Folder(
+        id=folder_id,
+        name=folders_data[folder_id]["name"],
+        parent_folder_id=folders_data[folder_id].get("parent_folder_id"),
+        created_at=folders_data[folder_id].get("created_at", datetime.datetime.now().isoformat()),
+        expanded=folders_data[folder_id].get("expanded", True)
+    )
+
+def delete_folder(folder_id: str, force: bool = False) -> bool:
+    """
+    Delete a folder.
+    If force=False, only deletes if folder is empty (no projects, no subfolders).
+    If force=True, moves all contents to root.
+    """
+    registry = _load_project_registry()
+    folders_data = _load_folders(registry)
+    
+    if folder_id not in folders_data:
+        return False
+    
+    # Check for subfolders
+    has_subfolders = any(f.get("parent_folder_id") == folder_id for f in folders_data.values())
+    
+    # Check for projects in this folder
+    has_projects = any(p.get("folder_id") == folder_id for pid, p in registry.items() if pid != "_folders")
+    
+    if not force and (has_subfolders or has_projects):
+        raise ValueError("Folder is not empty. Use force=True to move contents to root.")
+    
+    if force:
+        # Move projects to root
+        for pid, pdata in registry.items():
+            if pid != "_folders" and pdata.get("folder_id") == folder_id:
+                pdata["folder_id"] = None
+        
+        # Move subfolders to root (recursively handled by setting to None)
+        for fid, fdata in folders_data.items():
+            if fdata.get("parent_folder_id") == folder_id:
+                fdata["parent_folder_id"] = None
+    
+    del folders_data[folder_id]
+    _save_folders(registry, folders_data)
+    _save_project_registry(registry)
+    
+    return True
+
+def get_folder_tree() -> List[dict]:
+    """Get folders as a hierarchical tree structure."""
+    registry = _load_project_registry()
+    folders_data = _load_folders(registry)
+    
+    # Convert to Folder objects for easier handling
+    folders = []
+    for folder_id, data in folders_data.items():
+        folders.append({
+            "id": folder_id,
+            "name": data.get("name", "Untitled"),
+            "parent_folder_id": data.get("parent_folder_id"),
+            "created_at": data.get("created_at", datetime.datetime.now().isoformat()),
+            "expanded": data.get("expanded", True)
+        })
+    
+    # Count projects per folder directly from registry
+    def count_projects_in_folder(folder_id: str) -> int:
+        count = 0
+        for pid, pdata in registry.items():
+            if pid != "_folders" and pdata.get("folder_id") == folder_id:
+                count += 1
+        return count
+    
+    def build_tree(parent_id: Optional[str]) -> List[dict]:
+        tree = []
+        for folder in folders:
+            if folder["parent_folder_id"] == parent_id:
+                node = {
+                    "id": folder["id"],
+                    "name": folder["name"],
+                    "created_at": folder["created_at"],
+                    "expanded": folder["expanded"],
+                    "children": build_tree(folder["id"]),
+                    "project_count": count_projects_in_folder(folder["id"])
+                }
+                tree.append(node)
+        return tree
+    
+    return build_tree(None)
+
+def move_project_to_folder(project_id: str, folder_id: Optional[str] = None) -> bool:
+    """
+    Move a project to a folder (or root if folder_id is None).
+    Returns True if successful.
+    """
     registry = _load_project_registry()
     
+    if project_id not in registry:
+        return False
+    
+    # Validate folder_id if provided
+    if folder_id is not None:
+        folders_data = _load_folders(registry)
+        if folder_id not in folders_data:
+            raise ValueError("Folder not found")
+    
+    registry[project_id]["folder_id"] = folder_id
+    _save_project_registry(registry)
+    
+    # Invalidate cache
+    global _projects_cache, _projects_cache_time
+    _projects_cache = []
+    _projects_cache_time = 0
+    
+    return True
+
+def register_project(project_id: str, name: str, path: str, repo_url: str,
+                     sub_path: Optional[str] = None, parent_repo: Optional[str] = None,
+                     description: Optional[str] = None, folder_id: Optional[str] = None) -> None:
+    """Register a project in the registry."""
+    registry = _load_project_registry()
+
     # Get last modified time
     try:
         mtime = os.path.getmtime(path)
         last_modified = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d')
     except:
         last_modified = "Unknown"
-    
+
     registry[project_id] = {
         "name": name,
         "path": path,
@@ -77,9 +279,10 @@ def register_project(project_id: str, name: str, path: str, repo_url: str,
         "parent_repo": parent_repo,
         "description": description or f"Project {name}",
         "last_modified": last_modified,
-        "registered_at": datetime.datetime.now().isoformat()
+        "registered_at": datetime.datetime.now().isoformat(),
+        "folder_id": folder_id
     }
-    
+
     _save_project_registry(registry)
 
 def _normalize_path(path: str) -> str:
@@ -147,6 +350,10 @@ def get_registered_projects() -> List[Project]:
     registry = _load_project_registry()
     projects = []
     for project_id, data in registry.items():
+        # Skip special keys like _folders
+        if project_id.startswith("_"):
+            continue
+            
         # Normalize path for current environment
         normalized_path = _normalize_path(data["path"])
         
@@ -176,7 +383,8 @@ def get_registered_projects() -> List[Project]:
             parent_repo=data.get("parent_repo"),
             repo_url=data.get("repo_url"),
             import_type=data.get("import_type"),
-            parent_repo_path=_normalize_path(data.get("parent_repo_path")) if data.get("import_type") == "type2_subproject" else None
+            parent_repo_path=_normalize_path(data.get("parent_repo_path")) if data.get("import_type") == "type2_subproject" else None,
+            folder_id=data.get("folder_id")
         ))
     
     _projects_cache = projects
@@ -226,13 +434,10 @@ def get_project_by_id(project_id: str) -> Optional[Project]:
         parent_repo=data.get("parent_repo"),
         repo_url=data.get("repo_url"),
         import_type=data.get("import_type"),
-        parent_repo_path=_normalize_path(data.get("parent_repo_path")) if data.get("import_type") == "type2_subproject" else None
+        parent_repo_path=_normalize_path(data.get("parent_repo_path")) if data.get("import_type") == "type2_subproject" else None,
+        folder_id=data.get("folder_id")
     )
 
-import threading
-import uuid
-import time
-import subprocess
 
 # Global job store: {job_id: {status: str, message: str, percent: float, project_id: str, error: str, logs: list[str], type: str}}
 jobs = {}

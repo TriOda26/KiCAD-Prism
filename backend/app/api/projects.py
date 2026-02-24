@@ -19,6 +19,17 @@ class Monorepo(BaseModel):
     last_synced: Optional[str] = None
     repo_url: Optional[str] = None
 
+class FolderCreate(BaseModel):
+    name: str
+    parent_folder_id: Optional[str] = None
+
+class FolderUpdate(BaseModel):
+    name: Optional[str] = None
+    parent_folder_id: Optional[str] = None
+
+class FolderMove(BaseModel):
+    folder_id: Optional[str] = None  # None means move to root
+
 @router.get("/", response_model=List[project_service.Project])
 async def list_projects():
     """Return all registered projects (both Type-1 and Type-2)."""
@@ -258,6 +269,76 @@ async def trigger_workflow(project_id: str, request: WorkflowRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Folder Management Endpoints (must be before /{project_id} routes)
+
+@router.get("/folders", response_model=List[dict])
+async def list_folders():
+    """Get all folders as a tree structure."""
+    return project_service.get_folder_tree()
+
+@router.get("/folders/flat", response_model=List[project_service.Folder])
+async def list_folders_flat():
+    """Get all folders as a flat list."""
+    return project_service.get_all_folders()
+
+@router.post("/folders", response_model=project_service.Folder)
+async def create_folder(request: FolderCreate):
+    """Create a new folder."""
+    try:
+        folder = project_service.create_folder(
+            name=request.name,
+            parent_folder_id=request.parent_folder_id
+        )
+        return folder
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.put("/folders/{folder_id}", response_model=project_service.Folder)
+async def update_folder(folder_id: str, request: FolderUpdate):
+    """Update a folder (rename or move)."""
+    try:
+        folder = project_service.update_folder(
+            folder_id=folder_id,
+            name=request.name,
+            parent_folder_id=request.parent_folder_id
+        )
+        if not folder:
+            raise HTTPException(status_code=404, detail="Folder not found")
+        return folder
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.delete("/folders/{folder_id}")
+async def delete_folder(folder_id: str, force: bool = Query(False)):
+    """
+    Delete a folder.
+    If force=false, only deletes if folder is empty.
+    If force=true, moves all contents to root before deleting.
+    """
+    try:
+        success = project_service.delete_folder(folder_id=folder_id, force=force)
+        if not success:
+            raise HTTPException(status_code=404, detail="Folder not found")
+        return {"message": "Folder deleted successfully"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.put("/projects/{project_id}/folder")
+async def move_project_to_folder(project_id: str, request: FolderMove):
+    """Move a project to a folder (or root if folder_id is None)."""
+    try:
+        success = project_service.move_project_to_folder(
+            project_id=project_id,
+            folder_id=request.folder_id
+        )
+        if not success:
+            raise HTTPException(status_code=404, detail="Project not found")
+        return {"message": "Project moved successfully"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.get("/{project_id}/thumbnail")
 async def get_project_thumbnail(project_id: str):
@@ -715,17 +796,18 @@ async def update_project_name(project_id: str, request: ProjectNameRequest):
     project = project_service.get_project_by_id(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    
+
     # Get current config
     config = path_config_service.get_path_config(project.path)
-    
+
     # Update project name
     config.project_name = request.display_name.strip()
-    
+
     # Save to .prism.json
     path_config_service.save_path_config(project.path, config)
-    
+
     return {
         "display_name": request.display_name,
         "message": "Project name updated successfully"
     }
+
