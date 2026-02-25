@@ -8,4 +8,5 @@ export interface AuthConfig {
     auth_enabled: boolean;
     dev_mode: boolean;
     google_client_id: string;
+    workspace_name: string;
 }

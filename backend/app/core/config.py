@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     # ===========================================
     # Authentication & Access Control
     # ===========================================
+    WORKSPACE_NAME: str = Field(
+        default="KiCAD Prism",
+        description="Display name shown to users when signing into this workspace."
+    )
+
     # Explicitly enable/disable authentication. 
     # If not set, it's auto-determined by GOOGLE_CLIENT_ID and DEV_MODE.
     AUTH_ENABLED_OVERRIDE: bool = Field(

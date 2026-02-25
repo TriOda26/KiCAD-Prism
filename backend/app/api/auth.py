@@ -29,6 +29,7 @@ class AuthConfig(BaseModel):
     auth_enabled: bool
     dev_mode: bool
     google_client_id: str
+    workspace_name: str
 
 
 @router.get("/config", response_model=AuthConfig)
@@ -42,7 +43,8 @@ async def get_auth_config():
     return AuthConfig(
         auth_enabled=settings.AUTH_ENABLED,
         dev_mode=settings.DEV_MODE,
-        google_client_id=settings.GOOGLE_CLIENT_ID
+        google_client_id=settings.GOOGLE_CLIENT_ID,
+        workspace_name=settings.WORKSPACE_NAME,
     )
 
 

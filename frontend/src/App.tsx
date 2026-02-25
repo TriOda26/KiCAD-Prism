@@ -101,6 +101,7 @@ function App() {
                 <LoginPage
                     onLoginSuccess={setUser}
                     devMode={authConfig.dev_mode}
+                    workspaceName={authConfig.workspace_name}
                 />
             </GoogleOAuthProvider>
         );

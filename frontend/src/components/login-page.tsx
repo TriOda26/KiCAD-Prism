@@ -10,6 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 interface LoginPageProps {
   onLoginSuccess: (user: any) => void;
   devMode?: boolean;
+  workspaceName?: string;
 }
 
 const RELEASE_CACHE_KEY = "kicad_prism_latest_release_tag";
@@ -17,7 +18,7 @@ const RELEASE_CACHE_TIME_KEY = "kicad_prism_latest_release_tag_fetched_at";
 const RELEASE_CACHE_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_GITHUB_REPO = "krishna-swaroop/KiCAD-Prism";
 
-export function LoginPage({ onLoginSuccess, devMode = false }: LoginPageProps) {
+export function LoginPage({ onLoginSuccess, devMode = false, workspaceName = "KiCAD Prism" }: LoginPageProps) {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [releaseTag, setReleaseTag] = useState("...");
@@ -112,7 +113,7 @@ export function LoginPage({ onLoginSuccess, devMode = false }: LoginPageProps) {
 
         <div className="relative z-10 max-w-xl space-y-6">
           <div className="space-y-3">
-            <p className="text-sm font-medium uppercase tracking-[0.22em] text-primary">KiCAD Prism</p>
+            <p className="text-sm font-medium uppercase tracking-[0.22em] text-primary">{workspaceName}</p>
             <h1 className="text-5xl font-semibold tracking-tight">Visualizing KiCAD Projects.</h1>
             <p className="max-w-lg text-base text-muted-foreground">
               A web-based platform for viewing, reviewing, and collaborating on KiCAD projects.
@@ -126,15 +127,15 @@ export function LoginPage({ onLoginSuccess, devMode = false }: LoginPageProps) {
         </div>
       </section>
 
-      <section className="flex items-center justify-center px-6 py-8 sm:px-10">
-        <div className="w-full max-w-lg space-y-6">
+      <section className="relative flex items-center justify-center px-6 py-8 sm:px-10">
+        <div className="w-full max-w-xl space-y-6 rounded-2xl border border-border/70 bg-card/70 p-5 backdrop-blur-sm sm:p-7">
           <div className="flex items-center justify-center gap-3 lg:hidden">
             <img src={prismLogoMark} alt="KiCAD Prism" className="h-10 w-10" />
-            <p className="text-2xl font-semibold tracking-tight">KiCAD Prism</p>
+            <p className="text-2xl font-semibold tracking-tight">{workspaceName}</p>
           </div>
 
-          <Card className="relative overflow-hidden border-primary/30 bg-card shadow-2xl ring-1 ring-primary/20">
-            <div className="pointer-events-none absolute inset-0 ring-1 ring-inset ring-border/60" />
+          <Card className="relative overflow-hidden border-primary/40 bg-card ring-1 ring-primary/30">
+            <div className="pointer-events-none absolute inset-0 ring-1 ring-inset ring-border/80" />
             <CardHeader className="space-y-2 pb-7">
               <CardTitle className="text-2xl">Sign In</CardTitle>
               <CardDescription>Sign in with your Google account.</CardDescription>
