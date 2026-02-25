@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import shutil
 import uuid
 from typing import Dict, List, Optional
 
@@ -36,11 +37,60 @@ class FolderTreeItem(BaseModel):
     total_project_count: int = 0
 
 
-FOLDERS_FILE = os.path.join(
-    os.path.dirname(__file__),
-    "../../../data/projects/.folders.json",
-)
+FOLDERS_FILE = os.path.join(project_service.PROJECTS_ROOT, ".folders.json")
 os.makedirs(os.path.dirname(FOLDERS_FILE), exist_ok=True)
+
+
+def _legacy_folders_files() -> List[str]:
+    """Known legacy locations used by older backend builds."""
+    return [
+        # Historical relative path used by folder_service (can resolve to /data/projects in Docker).
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../data/projects/.folders.json")),
+        # Early Docker mapping workaround path.
+        "/app/data/projects/.folders.json",
+        # Legacy absolute path in some container layouts.
+        "/data/projects/.folders.json",
+    ]
+
+
+def _existing_folders_file_candidates() -> List[str]:
+    """
+    Return existing folder metadata files ordered by preference.
+
+    Canonical location is always first. Legacy locations are used only as fallback.
+    """
+    candidates = [FOLDERS_FILE, *_legacy_folders_files()]
+    existing: List[str] = []
+    seen = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if os.path.exists(candidate):
+            existing.append(candidate)
+    return existing
+
+
+def _ensure_canonical_folders_file() -> None:
+    """
+    Self-heal folder metadata placement.
+
+    If canonical file is missing but a legacy file exists, copy it into canonical path
+    so folder and project metadata share the same root consistently.
+    """
+    if os.path.exists(FOLDERS_FILE):
+        return
+
+    for legacy_path in _legacy_folders_files():
+        if not os.path.exists(legacy_path):
+            continue
+        try:
+            os.makedirs(os.path.dirname(FOLDERS_FILE), exist_ok=True)
+            shutil.copy2(legacy_path, FOLDERS_FILE)
+            return
+        except OSError:
+            # If migration fails, load path fallbacks still cover runtime behavior.
+            return
 
 UNSET = object()
 
@@ -57,13 +107,22 @@ def _normalize_name(name: str) -> str:
 
 
 def _load_folders() -> Dict[str, Folder]:
-    if os.path.exists(FOLDERS_FILE):
+    _ensure_canonical_folders_file()
+
+    for path in _existing_folders_file_candidates():
         try:
-            with open(FOLDERS_FILE, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 raw = json.load(f)
-            return {folder_id: Folder(**payload) for folder_id, payload in raw.items()}
+            folders = {folder_id: Folder(**payload) for folder_id, payload in raw.items()}
+
+            # If loaded from a legacy location, persist into canonical path once.
+            if path != FOLDERS_FILE and not os.path.exists(FOLDERS_FILE):
+                _save_folders(folders)
+
+            return folders
         except (json.JSONDecodeError, IOError):
-            return {}
+            continue
+
     return {}
 
 

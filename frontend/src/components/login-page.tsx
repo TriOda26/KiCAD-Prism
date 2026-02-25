@@ -1,159 +1,186 @@
-import { GoogleLogin, type CredentialResponse } from '@react-oauth/google';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { useState } from 'react';
-import { Binary } from 'lucide-react';
+import { GoogleLogin, type CredentialResponse } from "@react-oauth/google";
+import { useEffect, useState } from "react";
+import { Binary, Loader2 } from "lucide-react";
+
+import prismLogoHorizontal from "@/assets/branding/kicad-prism/kicad-prism-logo-horizontal.svg";
+import prismLogoMark from "@/assets/branding/kicad-prism/kicad-prism-icon.svg";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 interface LoginPageProps {
-    onLoginSuccess: (user: any) => void;
-    devMode?: boolean;
+  onLoginSuccess: (user: any) => void;
+  devMode?: boolean;
 }
 
-declare const __APP_VERSION__: string;
+const RELEASE_CACHE_KEY = "kicad_prism_latest_release_tag";
+const RELEASE_CACHE_TIME_KEY = "kicad_prism_latest_release_tag_fetched_at";
+const RELEASE_CACHE_TTL_MS = 15 * 60 * 1000;
+const DEFAULT_GITHUB_REPO = "krishna-swaroop/KiCAD-Prism";
 
 export function LoginPage({ onLoginSuccess, devMode = false }: LoginPageProps) {
-    const [error, setError] = useState<string | null>(null);
-    const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [releaseTag, setReleaseTag] = useState("...");
 
-    const handleSuccess = async (credentialResponse: CredentialResponse) => {
-        try {
-            setIsLoading(true);
-            setError(null);
+  useEffect(() => {
+    const cachedTag = window.sessionStorage.getItem(RELEASE_CACHE_KEY);
+    const cachedFetchedAt = window.sessionStorage.getItem(RELEASE_CACHE_TIME_KEY);
+    if (cachedTag && cachedFetchedAt) {
+      const fetchedAt = Number(cachedFetchedAt);
+      if (Number.isFinite(fetchedAt) && Date.now() - fetchedAt < RELEASE_CACHE_TTL_MS) {
+        setReleaseTag(cachedTag);
+        return;
+      }
+    }
 
-            if (!credentialResponse.credential) {
-                setError('No credentials received from Google');
-                return;
-            }
+    const controller = new AbortController();
+    const repo = import.meta.env.VITE_GITHUB_REPO || DEFAULT_GITHUB_REPO;
 
-            const res = await fetch('/api/auth/login', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ token: credentialResponse.credential }),
-            });
+    const loadLatestRelease = async () => {
+      try {
+        const response = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
+          headers: {
+            Accept: "application/vnd.github+json",
+          },
+          signal: controller.signal,
+        });
 
-            if (!res.ok) {
-                const errData = await res.json();
-                throw new Error(errData.detail || 'Login failed');
-            }
-
-            const data = await res.json();
-            onLoginSuccess(data);
-        } catch (err: any) {
-            setError(err.message || 'Login Failed');
-        } finally {
-            setIsLoading(false);
+        if (!response.ok) {
+          throw new Error("Failed to load release metadata");
         }
+
+        const payload = (await response.json()) as { tag_name?: string; name?: string };
+        const tag = payload.tag_name || payload.name || "Unavailable";
+        setReleaseTag(tag);
+        window.sessionStorage.setItem(RELEASE_CACHE_KEY, tag);
+        window.sessionStorage.setItem(RELEASE_CACHE_TIME_KEY, String(Date.now()));
+      } catch {
+        if (!controller.signal.aborted) {
+          setReleaseTag("Unavailable");
+        }
+      }
     };
 
-    const handleDevBypass = () => {
-        window.history.replaceState(null, '', '/');
-        onLoginSuccess({ name: 'Dev User', email: 'dev@pixxel.co.in' });
+    void loadLatestRelease();
+
+    return () => {
+      controller.abort();
     };
+  }, []);
 
-    return (
-        <div className="flex min-h-screen bg-background">
-            {/* Left Side: Branding & Visuals */}
-            <div className="hidden lg:flex flex-1 relative overflow-hidden bg-slate-900 border-r">
-                {/* Background Pattern */}
-                <div className="absolute inset-0 z-0 opacity-10">
-                    <svg className="h-full w-full" xmlns="http://www.w3.org/2000/svg">
-                        <defs>
-                            <pattern id="grid" width="60" height="60" patternUnits="userSpaceOnUse">
-                                <path d="M 60 0 L 0 0 0 60" fill="none" stroke="currentColor" strokeWidth="0.5" className="text-primary/40" />
-                            </pattern>
-                        </defs>
-                        <rect width="100%" height="100%" fill="url(#grid)" />
-                    </svg>
-                </div>
+  const handleSuccess = async (credentialResponse: CredentialResponse) => {
+    try {
+      setIsLoading(true);
+      setError(null);
 
-                <div className="relative z-10 flex flex-col justify-between p-12 w-full text-white">
-                    <div className="flex items-center gap-4">
-                        <img src="/logo.png" alt="KiCAD Prism Logo" className="w-10 h-10 object-contain" />
-                        <span className="text-2xl font-bold tracking-tight">KiCAD Prism</span>
-                    </div>
+      if (!credentialResponse.credential) {
+        setError("No credentials received from Google");
+        return;
+      }
 
-                    <div className="max-w-md">
-                        <h1 className="text-5xl font-extrabold tracking-tight mb-6 leading-tight">
-                            <span className="text-primary">Visualizing</span> <br />KiCAD Projects.
-                        </h1>
-                        <p className="text-lg text-slate-400 mb-8">
-                            A web-based platform for viewing, reviewing, and collaborating on KiCAD projects.
-                        </p>
-                    </div>
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: credentialResponse.credential }),
+      });
 
-                    <div className="flex items-center gap-4 text-slate-500 text-sm">
-                        <Binary className="w-4 h-4" />
-                        <span>{__APP_VERSION__}</span>
-                        <div className="h-4 w-px bg-slate-800"></div>
-                        <span>KiCAD-Prism Project</span>
-                    </div>
-                </div>
-            </div>
+      if (!response.ok) {
+        const errorPayload = await response.json();
+        throw new Error(errorPayload.detail || "Login failed");
+      }
 
-            {/* Right Side: Login Form */}
-            <div className="flex-1 flex items-center justify-center p-6 sm:p-12 bg-slate-50 dark:bg-slate-950">
-                <div className="w-full max-w-[360px] relative z-10 transition-all duration-700 ease-out animate-in fade-in slide-in-from-bottom-4">
-                    <div className="lg:hidden flex flex-col items-center mb-10 gap-4">
-                        <img src="/logo.png" alt="KiCAD Prism Logo" className="w-16 h-16 object-contain" />
-                        <h2 className="text-3xl font-bold tracking-tight text-center">KiCAD Prism</h2>
-                    </div>
+      const user = await response.json();
+      onLoginSuccess(user);
+    } catch (err: any) {
+      setError(err.message || "Login failed");
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
-                    <Card className="border-none shadow-xl bg-white dark:bg-slate-900 ring-1 ring-slate-200 dark:ring-slate-800">
-                        <CardHeader className="space-y-1 pb-6 text-center lg:text-left">
-                            <CardTitle className="text-2xl font-bold">Sign In</CardTitle>
-                            <CardDescription className="text-slate-500 dark:text-slate-400">
-                                Access your KiCAD Workspace
-                            </CardDescription>
-                        </CardHeader>
-                        <CardContent className="space-y-6">
-                            <div className="flex flex-col gap-4">
-                                <div className="flex justify-center transition-transform hover:scale-[1.01]">
-                                    <GoogleLogin
-                                        onSuccess={handleSuccess}
-                                        onError={() => setError('Google Sign-in failed')}
-                                        useOneTap
-                                        auto_select
-                                        theme="outline"
-                                        shape="pill"
-                                        size="large"
-                                        width="100%"
-                                    />
-                                </div>
+  const handleDevBypass = () => {
+    window.history.replaceState(null, "", "/");
+    onLoginSuccess({ name: "Dev User", email: "dev@pixxel.co.in" });
+  };
 
-                                {isLoading && (
-                                    <div className="flex items-center justify-center gap-2 py-2">
-                                        <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
-                                        <span className="text-sm font-medium text-slate-600 dark:text-slate-400">Authenticating...</span>
-                                    </div>
-                                )}
-
-                                {error && (
-                                    <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-900/30 rounded-lg">
-                                        <p className="text-xs text-red-600 dark:text-red-400 text-center font-medium">{error}</p>
-                                    </div>
-                                )}
-                            </div>
-
-                            {devMode && (
-                                <div className="pt-4 border-t border-slate-100 dark:border-slate-800">
-                                    <button
-                                        onClick={handleDevBypass}
-                                        className="flex items-center justify-center gap-2 w-full py-2.5 px-4 text-xs font-semibold text-slate-600 dark:text-slate-400 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg transition-all"
-                                    >
-                                        <Binary className="w-3.5 h-3.5" />
-                                        Skip Authentication (Dev Mode)
-                                    </button>
-                                </div>
-                            )}
-                        </CardContent>
-                    </Card>
-
-                    <footer className="mt-12 text-center lg:text-left">
-                        <p className="text-[10px] text-slate-400 dark:text-slate-600 font-medium uppercase tracking-widest">
-                            Self-Hosted Tooling • Restricted Access
-                        </p>
-                    </footer>
-                </div>
-            </div>
+  return (
+    <div className="grid min-h-screen bg-background text-foreground lg:grid-cols-[minmax(0,1.15fr)_minmax(420px,560px)]">
+      <section className="relative hidden border-r bg-card lg:flex lg:flex-col lg:justify-between lg:p-10">
+        <div className="relative z-10 flex items-center gap-3">
+          <img src={prismLogoHorizontal} alt="KiCAD Prism" className="h-10 w-auto" />
         </div>
-    );
+
+        <div className="relative z-10 max-w-xl space-y-6">
+          <div className="space-y-3">
+            <p className="text-sm font-medium uppercase tracking-[0.22em] text-primary">KiCAD Prism</p>
+            <h1 className="text-5xl font-semibold tracking-tight">Visualizing KiCAD Projects.</h1>
+            <p className="max-w-lg text-base text-muted-foreground">
+              A web-based platform for viewing, reviewing, and collaborating on KiCAD projects.
+            </p>
+          </div>
+        </div>
+
+        <div className="relative z-10 flex items-center gap-3 text-xs text-muted-foreground">
+          <Binary className="h-3.5 w-3.5" />
+          <span>Release {releaseTag}</span>
+        </div>
+      </section>
+
+      <section className="flex items-center justify-center px-6 py-8 sm:px-10">
+        <div className="w-full max-w-lg space-y-6">
+          <div className="flex items-center justify-center gap-3 lg:hidden">
+            <img src={prismLogoMark} alt="KiCAD Prism" className="h-10 w-10" />
+            <p className="text-2xl font-semibold tracking-tight">KiCAD Prism</p>
+          </div>
+
+          <Card className="relative overflow-hidden border-primary/30 bg-card shadow-2xl ring-1 ring-primary/20">
+            <div className="pointer-events-none absolute inset-0 ring-1 ring-inset ring-border/60" />
+            <CardHeader className="space-y-2 pb-7">
+              <CardTitle className="text-2xl">Sign In</CardTitle>
+              <CardDescription>Sign in with your Google account.</CardDescription>
+            </CardHeader>
+
+            <CardContent className="space-y-5 pb-7">
+              <div className="flex justify-center">
+                <GoogleLogin
+                  onSuccess={handleSuccess}
+                  onError={() => setError("Google sign-in failed")}
+                  useOneTap
+                  auto_select
+                  theme="outline"
+                  shape="pill"
+                  size="large"
+                  width="100%"
+                />
+              </div>
+
+              {isLoading && (
+                <div className="flex items-center justify-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>Authenticating…</span>
+                </div>
+              )}
+
+              {error && (
+                <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {error}
+                </div>
+              )}
+
+              {devMode && (
+                <Button variant="outline" className="w-full" onClick={handleDevBypass}>
+                  <Binary className="mr-2 h-4 w-4" />
+                  Skip Authentication (Dev Mode)
+                </Button>
+              )}
+            </CardContent>
+          </Card>
+
+          <p className="text-center text-xs text-muted-foreground">
+            Restricted Access  |  Contact your administrator for access.
+          </p>
+        </div>
+      </section>
+    </div>
+  );
 }
