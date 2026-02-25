@@ -168,28 +168,8 @@ export function AssetsPortal({ projectId }: AssetsPortalProps) {
         window.open(url, '_blank');
     };
 
-    const FileTree = ({ files, type }: { files: FileItem[], type: string }) => {
-        const tree = buildFileTree(files);
-
-        if (files.length === 0) {
-            return <p className="text-sm text-muted-foreground text-center py-8">No files found</p>;
-        }
-
-        return (
-            <div className="space-y-1">
-                {tree.map((node) => (
-                    <TreeNodeComponent
-                        key={node.path}
-                        node={node}
-                        type={type}
-                        projectId={projectId}
-                        onDownload={handleDownload}
-                        onPreview={handlePreview}
-                    />
-                ))}
-            </div>
-        );
-    };
+    const designTree = buildFileTree(designFiles);
+    const mfgTree = buildFileTree(mfgFiles);
 
     if (loading) {
         return (
@@ -215,7 +195,22 @@ export function AssetsPortal({ projectId }: AssetsPortalProps) {
                     </span>
                 </div>
                 <div className="border rounded-lg p-4 max-h-[600px] overflow-y-auto">
-                    <FileTree files={designFiles} type="design" />
+                    {designFiles.length === 0 ? (
+                        <p className="text-sm text-muted-foreground text-center py-8">No files found</p>
+                    ) : (
+                        <div className="space-y-1">
+                            {designTree.map((node) => (
+                                <TreeNodeComponent
+                                    key={node.path}
+                                    node={node}
+                                    type="design"
+                                    projectId={projectId}
+                                    onDownload={handleDownload}
+                                    onPreview={handlePreview}
+                                />
+                            ))}
+                        </div>
+                    )}
                 </div>
             </div>
 
@@ -228,10 +223,24 @@ export function AssetsPortal({ projectId }: AssetsPortalProps) {
                     </span>
                 </div>
                 <div className="border rounded-lg p-4 max-h-[600px] overflow-y-auto">
-                    <FileTree files={mfgFiles} type="manufacturing" />
+                    {mfgFiles.length === 0 ? (
+                        <p className="text-sm text-muted-foreground text-center py-8">No files found</p>
+                    ) : (
+                        <div className="space-y-1">
+                            {mfgTree.map((node) => (
+                                <TreeNodeComponent
+                                    key={node.path}
+                                    node={node}
+                                    type="manufacturing"
+                                    projectId={projectId}
+                                    onDownload={handleDownload}
+                                    onPreview={handlePreview}
+                                />
+                            ))}
+                        </div>
+                    )}
                 </div>
             </div>
         </div>
     );
 }
-
