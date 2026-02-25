@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type KeyboardEvent } from "react";
 import {
   Dialog,
   DialogContent,
@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Loader2, Check, AlertCircle } from "lucide-react";
+import { isDialogSubmitShortcut } from "@/lib/dialog-shortcuts";
 
 interface DiscoveredProject {
   name: string;
@@ -297,6 +298,34 @@ export function ImportDialog({
     setSelectedPaths(new Set());
   };
 
+  const handleDialogKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!isDialogSubmitShortcut(event)) {
+      return;
+    }
+
+    if (state.step === "input" && url.trim()) {
+      event.preventDefault();
+      void analyzeRepo();
+      return;
+    }
+
+    if (state.step === "review") {
+      const canImport = state.analysis.import_type === "type1" || selectedPaths.size > 0;
+      if (!canImport) {
+        return;
+      }
+
+      event.preventDefault();
+      void startImport();
+      return;
+    }
+
+    if (state.step === "complete") {
+      event.preventDefault();
+      handleClose();
+    }
+  };
+
   return (
     <Dialog
       open={open}
@@ -305,7 +334,7 @@ export function ImportDialog({
         else onOpenChange(true);
       }}
     >
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg" onKeyDown={handleDialogKeyDown}>
         {state.step === "input" && (
           <>
             <DialogHeader>
@@ -326,8 +355,9 @@ export function ImportDialog({
                   placeholder="https://github.com/username/repo"
                   className="col-span-3"
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" && url.trim()) {
-                      analyzeRepo();
+                    if (e.key === "Enter" && !e.metaKey && !e.ctrlKey && url.trim()) {
+                      e.preventDefault();
+                      void analyzeRepo();
                     }
                   }}
                 />
