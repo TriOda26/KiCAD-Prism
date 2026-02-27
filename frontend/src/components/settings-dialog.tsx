@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
@@ -65,25 +65,32 @@ function GitSettings() {
     const [generating, setGenerating] = useState(false);
     const [email] = useState("kicad-prism@example.com"); // Hardcoded for now or fetch from user profile if available
 
-    const fetchSshKey = async () => {
+    const fetchSshKey = useCallback(async (signal?: AbortSignal) => {
         setLoading(true);
         try {
-            const res = await fetch("/api/settings/ssh-key");
+            const res = await fetch("/api/settings/ssh-key", { signal });
             if (res.ok) {
                 const data = await res.json();
                 setSshKey(data.public_key);
             }
         } catch (err) {
+            if (err instanceof DOMException && err.name === "AbortError") {
+                return;
+            }
             console.error("Failed to fetch SSH key", err);
             toast.error("Failed to load SSH key settings");
         } finally {
-            setLoading(false);
+            if (!signal?.aborted) {
+                setLoading(false);
+            }
         }
-    };
+    }, []);
 
     useEffect(() => {
-        fetchSshKey();
-    }, []);
+        const controller = new AbortController();
+        fetchSshKey(controller.signal);
+        return () => controller.abort();
+    }, [fetchSshKey]);
 
     const generateKey = async () => {
         if (!confirm("This will overwrite any existing SSH key. Continue?")) return;
@@ -103,7 +110,7 @@ function GitSettings() {
                 const err = await res.json();
                 toast.error(err.detail || "Failed to generate SSH key.");
             }
-        } catch (err) {
+        } catch {
             toast.error("An error occurred while connecting to the backend.");
         } finally {
             setGenerating(false);

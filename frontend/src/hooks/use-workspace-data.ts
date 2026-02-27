@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { fetchJson, readApiError } from "@/lib/api";
 import { FolderTreeItem, Project } from "@/types/project";
 
 export interface WorkspaceActionResult {
@@ -21,15 +22,6 @@ interface WorkspaceDataState {
   deleteProject: (projectId: string) => Promise<WorkspaceActionResult>;
 }
 
-async function getErrorMessage(response: Response, fallback: string): Promise<string> {
-  try {
-    const payload = (await response.json()) as { detail?: string; message?: string };
-    return payload.detail || payload.message || fallback;
-  } catch {
-    return fallback;
-  }
-}
-
 export function useWorkspaceData(): WorkspaceDataState {
   const [projects, setProjects] = useState<Project[]>([]);
   const [folders, setFolders] = useState<FolderTreeItem[]>([]);
@@ -40,31 +32,40 @@ export function useWorkspaceData(): WorkspaceDataState {
     setLoading(true);
     setError(null);
 
-    try {
-      const [projectsResponse, foldersResponse] = await Promise.all([
-        fetch("/api/projects/"),
-        fetch("/api/folders/tree"),
-      ]);
+    const [projectsResult, foldersResult] = await Promise.allSettled([
+      fetchJson<Project[]>("/api/projects/", undefined, "Failed to load projects"),
+      fetchJson<FolderTreeItem[]>("/api/folders/tree", undefined, "Failed to load folders"),
+    ]);
 
-      if (!projectsResponse.ok) {
-        throw new Error(await getErrorMessage(projectsResponse, "Failed to load projects"));
-      }
-
-      const projectPayload = (await projectsResponse.json()) as Project[];
-      setProjects(projectPayload);
-
-      if (foldersResponse.ok) {
-        const folderPayload = (await foldersResponse.json()) as FolderTreeItem[];
-        setFolders(folderPayload);
-      } else {
-        setFolders([]);
-      }
-    } catch (loadError) {
-      const message = loadError instanceof Error ? loadError.message : "An error occurred while loading workspace";
-      setError(message);
-    } finally {
-      setLoading(false);
+    if (projectsResult.status === "fulfilled") {
+      setProjects(projectsResult.value);
+    } else {
+      setProjects([]);
     }
+
+    if (foldersResult.status === "fulfilled") {
+      setFolders(foldersResult.value);
+    } else {
+      setFolders([]);
+    }
+
+    if (projectsResult.status === "rejected") {
+      const message =
+        projectsResult.reason instanceof Error
+          ? projectsResult.reason.message
+          : "Failed to load projects";
+      setError(message);
+    } else if (foldersResult.status === "rejected") {
+      const message =
+        foldersResult.reason instanceof Error
+          ? foldersResult.reason.message
+          : "Failed to load folders";
+      setError(message);
+    } else {
+      setError(null);
+    }
+
+    setLoading(false);
   }, []);
 
   useEffect(() => {
@@ -79,113 +80,99 @@ export function useWorkspaceData(): WorkspaceDataState {
     return lookup;
   }, [folders]);
 
+  const runMutation = useCallback(
+    async (
+      input: RequestInfo | URL,
+      init: RequestInit,
+      fallbackError: string
+    ): Promise<WorkspaceActionResult> => {
+      try {
+        const response = await fetch(input, init);
+        if (!response.ok) {
+          return { ok: false, error: await readApiError(response, fallbackError) };
+        }
+
+        await refresh();
+        return { ok: true };
+      } catch {
+        return { ok: false, error: fallbackError };
+      }
+    },
+    [refresh]
+  );
+
   const createFolder = useCallback(
     async (name: string, parentId: string | null): Promise<WorkspaceActionResult> => {
-      try {
-        const response = await fetch("/api/folders/", {
+      return runMutation(
+        "/api/folders/",
+        {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             name,
             parent_id: parentId,
           }),
-        });
-
-        if (!response.ok) {
-          return { ok: false, error: await getErrorMessage(response, "Failed to create folder") };
-        }
-
-        await refresh();
-        return { ok: true };
-      } catch {
-        return { ok: false, error: "Failed to create folder" };
-      }
+        },
+        "Failed to create folder"
+      );
     },
-    [refresh]
+    [runMutation]
   );
 
   const renameFolder = useCallback(
     async (folderId: string, name: string): Promise<WorkspaceActionResult> => {
-      try {
-        const response = await fetch(`/api/folders/${folderId}`, {
+      return runMutation(
+        `/api/folders/${folderId}`,
+        {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name }),
-        });
-
-        if (!response.ok) {
-          return { ok: false, error: await getErrorMessage(response, "Failed to rename folder") };
-        }
-
-        await refresh();
-        return { ok: true };
-      } catch {
-        return { ok: false, error: "Failed to rename folder" };
-      }
+        },
+        "Failed to rename folder"
+      );
     },
-    [refresh]
+    [runMutation]
   );
 
   const deleteFolder = useCallback(
     async (folderId: string): Promise<WorkspaceActionResult> => {
-      try {
-        const response = await fetch(`/api/folders/${folderId}?cascade=true`, {
+      return runMutation(
+        `/api/folders/${folderId}?cascade=true`,
+        {
           method: "DELETE",
-        });
-
-        if (!response.ok) {
-          return { ok: false, error: await getErrorMessage(response, "Failed to delete folder") };
-        }
-
-        await refresh();
-        return { ok: true };
-      } catch {
-        return { ok: false, error: "Failed to delete folder" };
-      }
+        },
+        "Failed to delete folder"
+      );
     },
-    [refresh]
+    [runMutation]
   );
 
   const moveProject = useCallback(
     async (projectId: string, folderId: string | null): Promise<WorkspaceActionResult> => {
-      try {
-        const response = await fetch(`/api/folders/projects/${projectId}/move`, {
+      return runMutation(
+        `/api/folders/projects/${projectId}/move`,
+        {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ folder_id: folderId }),
-        });
-
-        if (!response.ok) {
-          return { ok: false, error: await getErrorMessage(response, "Failed to move project") };
-        }
-
-        await refresh();
-        return { ok: true };
-      } catch {
-        return { ok: false, error: "Failed to move project" };
-      }
+        },
+        "Failed to move project"
+      );
     },
-    [refresh]
+    [runMutation]
   );
 
   const deleteProject = useCallback(
     async (projectId: string): Promise<WorkspaceActionResult> => {
-      try {
-        const response = await fetch(`/api/projects/${projectId}`, {
+      return runMutation(
+        `/api/projects/${projectId}`,
+        {
           method: "DELETE",
-        });
-
-        if (!response.ok) {
-          return { ok: false, error: await getErrorMessage(response, "Failed to delete project") };
-        }
-
-        await refresh();
-        return { ok: true };
-      } catch {
-        return { ok: false, error: "Failed to delete project" };
-      }
+        },
+        "Failed to delete project"
+      );
     },
-    [refresh]
+    [runMutation]
   );
 
   return {

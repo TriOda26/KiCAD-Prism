@@ -2,7 +2,7 @@
 Diff API Routes (Native)
 """
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from app.services import diff_service

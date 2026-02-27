@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { GitCommit, Tag, Eye, Check, Copy, User, Clock, Calendar } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { VisualDiffViewer } from "./visual-diff-viewer";
+import { fetchJson } from "@/lib/api";
 
 interface Release {
     tag: string;
@@ -18,6 +19,14 @@ interface Commit {
     email: string;
     date: string;
     message: string;
+}
+
+interface ReleasesResponse {
+    releases: Release[];
+}
+
+interface CommitsResponse {
+    commits: Commit[];
 }
 
 interface HistoryViewerProps {
@@ -50,9 +59,13 @@ function CommitItem({ commit, onViewCommit, isSelected, onSelect }: CommitItemPr
     const [copied, setCopied] = useState(false);
 
     const handleCopy = async () => {
-        await navigator.clipboard.writeText(commit.full_hash);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
+        try {
+            await navigator.clipboard.writeText(commit.full_hash);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        } catch (error) {
+            console.warn("Failed to copy commit hash", error);
+        }
     };
 
     return (
@@ -119,11 +132,12 @@ export function HistoryViewer({ projectId, onViewCommit }: HistoryViewerProps) {
     const [releases, setReleases] = useState<Release[]>([]);
     const [commits, setCommits] = useState<Commit[]>([]);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
     const [selectedCommits, setSelectedCommits] = useState<string[]>([]);
     const [showDiff, setShowDiff] = useState(false);
 
     // Filter commits to find selected ones and determining newer/older
-    const getSortedSelectedCommits = () => {
+    const diffPair = useMemo(() => {
         if (selectedCommits.length !== 2) return null;
 
         // Commits are already sorted by date (newest first)
@@ -140,7 +154,7 @@ export function HistoryViewer({ projectId, onViewCommit }: HistoryViewerProps) {
             newer: commits[newerIndex],
             older: commits[olderIndex]
         };
-    };
+    }, [commits, selectedCommits]);
 
     const handleSelectCommit = (hash: string) => {
         setSelectedCommits(prev => {
@@ -150,39 +164,86 @@ export function HistoryViewer({ projectId, onViewCommit }: HistoryViewerProps) {
             if (prev.length >= 2) {
                 // Remove oldest selection (first one added? or just FIFO)
                 // Let's just create a new array with the new one
-                const [_, second] = prev;
-                return [second, hash];
+                return [prev[1], hash];
             }
             return [...prev, hash];
         });
     };
 
-    const diffPair = getSortedSelectedCommits();
+    useEffect(() => {
+        const currentHashes = new Set(commits.map((commit) => commit.full_hash));
+        setSelectedCommits((previous) => previous.filter((hash) => currentHashes.has(hash)).slice(-2));
+    }, [commits]);
 
     useEffect(() => {
-        const fetchHistory = async () => {
-            try {
-                const [releasesRes, commitsRes] = await Promise.all([
-                    fetch(`/api/projects/${projectId}/releases`),
-                    fetch(`/api/projects/${projectId}/commits`)
-                ]);
+        const controller = new AbortController();
+        setLoading(true);
+        setError(null);
 
-                if (releasesRes.ok) {
-                    const data = await releasesRes.json();
-                    setReleases(data.releases);
-                }
-                if (commitsRes.ok) {
-                    const data = await commitsRes.json();
-                    setCommits(data.commits);
-                }
-            } catch (err) {
-                console.error("Failed to fetch history", err);
-            } finally {
-                setLoading(false);
+        const fetchHistory = async () => {
+            const [releasesResult, commitsResult] = await Promise.allSettled([
+                fetchJson<ReleasesResponse>(
+                    `/api/projects/${projectId}/releases`,
+                    { signal: controller.signal },
+                    "Failed to load releases"
+                ),
+                fetchJson<CommitsResponse>(
+                    `/api/projects/${projectId}/commits`,
+                    { signal: controller.signal },
+                    "Failed to load commits"
+                ),
+            ]);
+
+            if (controller.signal.aborted) {
+                return;
             }
+
+            if (releasesResult.status === "fulfilled") {
+                setReleases(releasesResult.value.releases || []);
+            } else {
+                setReleases([]);
+            }
+
+            if (commitsResult.status === "fulfilled") {
+                setCommits(commitsResult.value.commits || []);
+            } else {
+                setCommits([]);
+            }
+
+            if (releasesResult.status === "rejected" && commitsResult.status === "rejected") {
+                const releaseMessage =
+                    releasesResult.reason instanceof Error ? releasesResult.reason.message : "Failed to load releases";
+                const commitMessage =
+                    commitsResult.reason instanceof Error ? commitsResult.reason.message : "Failed to load commits";
+                setError(`${releaseMessage}. ${commitMessage}`);
+            } else if (releasesResult.status === "rejected") {
+                const releaseMessage =
+                    releasesResult.reason instanceof Error ? releasesResult.reason.message : "Failed to load releases";
+                setError(releaseMessage);
+            } else if (commitsResult.status === "rejected") {
+                const commitMessage =
+                    commitsResult.reason instanceof Error ? commitsResult.reason.message : "Failed to load commits";
+                setError(commitMessage);
+            } else {
+                setError(null);
+            }
+
+            setLoading(false);
         };
 
-        fetchHistory();
+        fetchHistory().catch((err: unknown) => {
+            if (controller.signal.aborted) {
+                return;
+            }
+            if (err instanceof DOMException && err.name === "AbortError") {
+                return;
+            }
+            console.error("Failed to fetch history", err);
+            setError("Failed to load history");
+            setLoading(false);
+        });
+
+        return () => controller.abort();
     }, [projectId]);
 
     if (loading) {
@@ -196,6 +257,12 @@ export function HistoryViewer({ projectId, onViewCommit }: HistoryViewerProps) {
 
     return (
         <div className="space-y-8">
+            {error && (
+                <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-2 text-sm text-red-500">
+                    {error}
+                </div>
+            )}
+
             {/* Visual Diff Viewer */}
             {showDiff && diffPair && (
                 <VisualDiffViewer

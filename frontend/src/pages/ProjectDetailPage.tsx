@@ -1,20 +1,32 @@
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState, type ComponentType } from "react";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, FileText, History, Box, FolderOpen, ChevronLeft, ChevronRight, GitBranch, RotateCcw, PlayCircle, RefreshCw, Menu, Settings } from "lucide-react";
+import { fetchJson, readApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { AssetsPortal } from "@/components/assets-portal";
-import { PathConfigDialog } from "@/components/path-config-dialog";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import "github-markdown-css/github-markdown-dark.css";
-import { DocumentationBrowser } from "@/components/documentation-browser";
-import { HistoryViewer } from "@/components/history-viewer";
-import { Visualizer } from "@/components/visualizer";
 import { User } from "@/types/auth";
 
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
+
+const AssetsPortal = lazy(() =>
+    import("@/components/assets-portal").then((module) => ({ default: module.AssetsPortal }))
+);
+const PathConfigDialog = lazy(() =>
+    import("@/components/path-config-dialog").then((module) => ({ default: module.PathConfigDialog }))
+);
+const DocumentationBrowser = lazy(() =>
+    import("@/components/documentation-browser").then((module) => ({ default: module.DocumentationBrowser }))
+);
+const HistoryViewer = lazy(() =>
+    import("@/components/history-viewer").then((module) => ({ default: module.HistoryViewer }))
+);
+const Visualizer = lazy(() =>
+    import("@/components/visualizer").then((module) => ({ default: module.Visualizer }))
+);
 
 interface Project {
     id: string;
@@ -23,6 +35,31 @@ interface Project {
     description: string;
     path: string;
     last_modified: string;
+}
+
+interface ProjectNameResponse {
+    display_name?: string;
+}
+
+interface ReadmeResponse {
+    content: string;
+}
+
+interface CommitSummary {
+    full_hash: string;
+}
+
+interface CommitsResponse {
+    commits: CommitSummary[];
+}
+
+interface WorkflowJobResponse {
+    job_id: string;
+}
+
+interface WorkflowJobStatus {
+    status: string;
+    logs?: string[];
 }
 
 type Section = "overview" | "history" | "visualizers" | "assets" | "documentation" | "workflows";
@@ -74,93 +111,112 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
         setSyncMessage(null);
 
         try {
-            const response = await fetch(`/api/projects/${projectId}/sync`, {
-                method: 'POST',
-            });
-
-            if (response.ok) {
-                const data = await response.json();
-                setSyncMessage(data.message);
-                // Refresh project data and readme without full reload
-                setRefreshKey(prev => prev + 1);
-            } else {
-                const error = await response.json();
-                setSyncMessage(`Sync failed: ${error.detail}`);
-            }
-        } catch (err: any) {
-            setSyncMessage(`Sync failed: ${err.message}`);
+            const data = await fetchJson<{ message?: string }>(
+                `/api/projects/${projectId}/sync`,
+                { method: "POST" },
+                "Sync failed"
+            );
+            setSyncMessage(data.message || "Sync completed.");
+            // Refresh project data and readme without full reload
+            setRefreshKey((prev) => prev + 1);
+        } catch (err) {
+            const message = err instanceof Error ? err.message : "Sync failed";
+            setSyncMessage(`Sync failed: ${message}`);
         } finally {
             setSyncing(false);
         }
     };
 
     useEffect(() => {
-        const fetchProject = async () => {
-            try {
-                const [projectResponse, nameResponse] = await Promise.all([
-                    fetch(`/api/projects/${projectId}`),
-                    fetch(`/api/projects/${projectId}/name`)
-                ]);
-                
-                if (!projectResponse.ok) throw new Error("Failed to fetch project");
-                const projectData = await projectResponse.json();
-                
-                if (nameResponse.ok) {
-                    const nameData = await nameResponse.json();
-                    projectData.display_name = nameData.display_name;
-                }
-                
-                setProject(projectData);
-            } catch (err) {
-                console.error(err);
-            } finally {
-                setLoading(false);
-            }
-        };
+        if (!projectId) {
+            setLoading(false);
+            return;
+        }
 
-        const fetchReadme = async () => {
+        const controller = new AbortController();
+        setLoading(true);
+
+        const fetchProjectData = async () => {
             try {
-                const url = currentCommit
+                const readmeUrl = currentCommit
                     ? `/api/projects/${projectId}/readme?commit=${currentCommit}`
                     : `/api/projects/${projectId}/readme`;
-                const response = await fetch(url);
-                if (response.ok) {
-                    const data = await response.json();
-                    setReadme(data.content);
+
+                const [projectData, nameData, readmeData] = await Promise.all([
+                    fetchJson<Project>(`/api/projects/${projectId}`, { signal: controller.signal }, "Failed to fetch project"),
+                    fetchJson<ProjectNameResponse>(
+                        `/api/projects/${projectId}/name`,
+                        { signal: controller.signal },
+                        "Failed to fetch project name"
+                    ).catch(() => null),
+                    fetchJson<ReadmeResponse>(readmeUrl, { signal: controller.signal }, "README not found").catch(() => null),
+                ]);
+
+                if (controller.signal.aborted) {
+                    return;
                 }
+
+                setProject({
+                    ...projectData,
+                    display_name: nameData?.display_name ?? projectData.display_name,
+                });
+                setReadme(readmeData?.content ?? "");
             } catch (err) {
-                console.error("README not found", err);
+                if (controller.signal.aborted) {
+                    return;
+                }
+                console.error("Failed to fetch project details", err);
+                setProject(null);
+                setReadme("");
+            } finally {
+                if (!controller.signal.aborted) {
+                    setLoading(false);
+                }
             }
         };
 
-        if (projectId) {
-            fetchProject();
-            fetchReadme();
-        }
+        void fetchProjectData();
+        return () => controller.abort();
     }, [projectId, currentCommit, refreshKey]);
 
     // Calculate commits behind when viewing specific commit
     useEffect(() => {
+        if (!projectId) {
+            setCommitsBehind(0);
+            return;
+        }
+
+        const controller = new AbortController();
+
         const calculateCommitsBehind = async () => {
-            if (!currentCommit || !projectId) {
+            if (!currentCommit) {
                 setCommitsBehind(0);
                 return;
             }
 
             try {
-                const response = await fetch(`/api/projects/${projectId}/commits`);
-                if (response.ok) {
-                    const data = await response.json();
-                    const commits = data.commits;
-                    const index = commits.findIndex((c: any) => c.full_hash === currentCommit);
-                    setCommitsBehind(index >= 0 ? index : 0);
+                const data = await fetchJson<CommitsResponse>(
+                    `/api/projects/${projectId}/commits`,
+                    { signal: controller.signal },
+                    "Failed to fetch commit history"
+                );
+
+                if (controller.signal.aborted) {
+                    return;
                 }
+
+                const index = data.commits.findIndex((commit) => commit.full_hash === currentCommit);
+                setCommitsBehind(index >= 0 ? index : 0);
             } catch (err) {
+                if (controller.signal.aborted) {
+                    return;
+                }
                 console.error("Failed to calculate commits behind", err);
             }
         };
 
-        calculateCommitsBehind();
+        void calculateCommitsBehind();
+        return () => controller.abort();
     }, [currentCommit, projectId]);
 
     if (loading) {
@@ -253,12 +309,14 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
                     <Settings className="h-4 w-4" />
                 </Button>
 
-                {projectId && (
-                    <PathConfigDialog
-                        projectId={projectId}
-                        open={pathConfigOpen}
-                        onOpenChange={setPathConfigOpen}
-                    />
+                {projectId && pathConfigOpen && (
+                    <Suspense fallback={null}>
+                        <PathConfigDialog
+                            projectId={projectId}
+                            open={pathConfigOpen}
+                            onOpenChange={setPathConfigOpen}
+                        />
+                    </Suspense>
                 )}
             </header>
 
@@ -398,21 +456,33 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
                     {activeSection === "assets" && (
                         <div>
                             <h2 className="text-2xl font-bold mb-6">Assets Portal</h2>
-                            {projectId && <AssetsPortal projectId={projectId} />}
+                            {projectId && (
+                                <Suspense fallback={<div className="text-sm text-muted-foreground">Loading assets...</div>}>
+                                    <AssetsPortal projectId={projectId} />
+                                </Suspense>
+                            )}
                         </div>
                     )}
 
                     {activeSection === "documentation" && (
                         <div>
                             <h2 className="text-2xl font-bold mb-6">Documentation</h2>
-                            {projectId && <DocumentationBrowser projectId={projectId} commit={currentCommit} key={activeSection} />}
+                            {projectId && (
+                                <Suspense fallback={<div className="text-sm text-muted-foreground">Loading documentation...</div>}>
+                                    <DocumentationBrowser projectId={projectId} commit={currentCommit} key={activeSection} />
+                                </Suspense>
+                            )}
                         </div>
                     )}
 
                     {activeSection === "history" && (
                         <div>
                             <h2 className="text-2xl font-bold mb-6">History</h2>
-                            {projectId && <HistoryViewer key={refreshKey} projectId={projectId} onViewCommit={handleViewCommit} />}
+                            {projectId && (
+                                <Suspense fallback={<div className="text-sm text-muted-foreground">Loading history...</div>}>
+                                    <HistoryViewer key={refreshKey} projectId={projectId} onViewCommit={handleViewCommit} />
+                                </Suspense>
+                            )}
                         </div>
                     )}
 
@@ -425,7 +495,11 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
                         >
                             <h2 className="text-2xl font-bold mb-6">Visualizers</h2>
                             <div className="flex-1 min-h-0">
-                                {projectId && <Visualizer projectId={projectId} user={user} />}
+                                {projectId && (
+                                    <Suspense fallback={<div className="text-sm text-muted-foreground">Loading visualizers...</div>}>
+                                        <Visualizer projectId={projectId} user={user} />
+                                    </Suspense>
+                                )}
                             </div>
                         </div>
                     )}
@@ -450,25 +524,24 @@ function WorkflowsPanel({ projectId, user }: { projectId: string, user: User | n
     const [status, setStatus] = useState<string>("idle");
 
     useEffect(() => {
-        let pollInterval: any;
+        let pollInterval: ReturnType<typeof window.setInterval> | null = null;
 
         if (runningJob) {
             pollInterval = setInterval(async () => {
                 try {
-                    const res = await fetch(`/api/projects/jobs/${runningJob.id}`);
-                    if (res.ok) {
-                        const job = await res.json();
-                        setLogs(job.logs || []);
-                        setStatus(job.status);
+                    const job = await fetchJson<WorkflowJobStatus>(`/api/projects/jobs/${runningJob.id}`);
+                    setLogs(job.logs || []);
+                    setStatus(job.status);
 
-                        if (job.status === 'completed' || job.status === 'failed') {
-                            setStatus(job.status);
-                            // Keep logs visible but stop polling after a short delay to ensure final update
-                            setTimeout(() => {
+                    if (job.status === 'completed' || job.status === 'failed') {
+                        // Keep logs visible but stop polling after a short delay to ensure final update
+                        setTimeout(() => {
+                            if (pollInterval) {
                                 clearInterval(pollInterval);
-                                // Optional: Reset running job after some time? No, let user see result.
-                            }, 1000);
-                        }
+                                pollInterval = null;
+                            }
+                            // Optional: Reset running job after some time? No, let user see result.
+                        }, 1000);
                     }
                 } catch (e) {
                     console.error("Poll error", e);
@@ -476,7 +549,11 @@ function WorkflowsPanel({ projectId, user }: { projectId: string, user: User | n
             }, 1000);
         }
 
-        return () => clearInterval(pollInterval);
+        return () => {
+            if (pollInterval) {
+                clearInterval(pollInterval);
+            }
+        };
     }, [runningJob]);
 
     const runWorkflow = async (type: string) => {
@@ -493,15 +570,16 @@ function WorkflowsPanel({ projectId, user }: { projectId: string, user: User | n
             });
 
             if (res.ok) {
-                const data = await res.json();
+                const data = (await res.json()) as WorkflowJobResponse;
                 setRunningJob({ id: data.job_id, type });
             } else {
-                const err = await res.json();
-                alert(`Error: ${err.detail}`);
+                const message = await readApiError(res, "Failed to start workflow");
+                alert(`Error: ${message}`);
                 setStatus("idle");
             }
-        } catch (e: any) {
-            alert(e.message);
+        } catch (e) {
+            const message = e instanceof Error ? e.message : "Failed to start workflow";
+            alert(message);
             setStatus("idle");
         }
     };
@@ -554,7 +632,15 @@ function WorkflowsPanel({ projectId, user }: { projectId: string, user: User | n
     );
 }
 
-function WorkflowCard({ title, desc, icon: Icon, onClick, disabled }: any) {
+interface WorkflowCardProps {
+    title: string;
+    desc: string;
+    icon: ComponentType<{ className?: string }>;
+    onClick: () => void;
+    disabled: boolean;
+}
+
+function WorkflowCard({ title, desc, icon: Icon, onClick, disabled }: WorkflowCardProps) {
     return (
         <button
             onClick={onClick}

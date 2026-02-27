@@ -11,7 +11,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.services import project_service
+from app.api._helpers import get_project_or_404
 from app.services.comments_store_service import comments_store
 
 router = APIRouter()
@@ -71,20 +71,6 @@ class CommentsFile(BaseModel):
     comments: List[Comment] = []
 
 
-# ============================================================
-# HELPERS
-# ============================================================
-
-
-def _get_project_or_404(project_id: str):
-    project = project_service.get_project_by_id(project_id)
-
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    return project
-
-
 def _normalize_author(author: Optional[str]) -> str:
     return (author or "anonymous").strip() or "anonymous"
 
@@ -98,7 +84,7 @@ async def get_comments(project_id: str):
     """
     Get all comments for a project from DB snapshot.
     """
-    project = _get_project_or_404(project_id)
+    project = get_project_or_404(project_id)
     return comments_store.get_comments_file(project.id, project.path)
 
 
@@ -107,7 +93,7 @@ async def create_comment(project_id: str, request: CreateCommentRequest):
     """
     Create a new comment on the design.
     """
-    project = _get_project_or_404(project_id)
+    project = get_project_or_404(project_id)
 
     context = request.context.upper()
     if context not in {"PCB", "SCH"}:
@@ -128,7 +114,7 @@ async def update_comment(project_id: str, comment_id: str, request: UpdateCommen
     """
     Update a comment's status (e.g., resolve it).
     """
-    project = _get_project_or_404(project_id)
+    project = get_project_or_404(project_id)
 
     if request.status is None:
         raise HTTPException(status_code=400, detail="No update fields provided")
@@ -155,7 +141,7 @@ async def add_reply(project_id: str, comment_id: str, request: CreateReplyReques
     """
     Add a reply to an existing comment.
     """
-    project = _get_project_or_404(project_id)
+    project = get_project_or_404(project_id)
 
     result = comments_store.add_reply(
         project_id=project.id,
@@ -177,7 +163,7 @@ async def delete_comment(project_id: str, comment_id: str):
     """
     Delete a comment.
     """
-    project = _get_project_or_404(project_id)
+    project = get_project_or_404(project_id)
 
     deleted = comments_store.delete_comment(
         project_id=project.id,
@@ -201,7 +187,7 @@ async def push_comments(project_id: str):
     Export DB snapshot to comments.json artifact only.
     Git commit/push is intentionally left to the user workflow.
     """
-    project = _get_project_or_404(project_id)
+    project = get_project_or_404(project_id)
 
     try:
         comments_path = comments_store.export_comments_json(project.id, project.path)

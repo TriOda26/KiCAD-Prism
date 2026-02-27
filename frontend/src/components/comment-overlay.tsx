@@ -26,6 +26,8 @@ interface PinPosition {
     visible: boolean;
 }
 
+const OVERLAY_REFRESH_INTERVAL_MS = 16;
+
 /**
  * CommentOverlay renders comment pin markers as an overlay on top of the ecad-viewer.
  * Pins are positioned using world-to-screen coordinate transforms and stay
@@ -99,7 +101,7 @@ export function CommentOverlay({
         updatePositions();
 
         // Poll for updates (fallback for events we might miss)
-        const interval = setInterval(updatePositions, 50);
+        const interval = setInterval(updatePositions, OVERLAY_REFRESH_INTERVAL_MS);
 
         return () => {
             viewer.removeEventListener("kicanvas:mousemove", handleViewChange);

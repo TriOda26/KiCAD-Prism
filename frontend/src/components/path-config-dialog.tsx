@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
     Dialog,
     DialogContent,
@@ -93,13 +93,13 @@ export function PathConfigDialog({ projectId, open, onOpenChange }: PathConfigDi
     const [saving, setSaving] = useState(false);
     const [detecting, setDetecting] = useState(false);
 
-    const fetchConfig = async () => {
+    const fetchConfig = useCallback(async (signal?: AbortSignal) => {
         try {
             // Fetch both path config and project name
             const [configResponse, nameResponse, descriptionResponse] = await Promise.all([
-                fetch(`/api/projects/${projectId}/config`),
-                fetch(`/api/projects/${projectId}/name`),
-                fetch(`/api/projects/${projectId}/description`)
+                fetch(`/api/projects/${projectId}/config`, { signal }),
+                fetch(`/api/projects/${projectId}/name`, { signal }),
+                fetch(`/api/projects/${projectId}/description`, { signal })
             ]);
             
             if (configResponse.ok) {
@@ -126,9 +126,12 @@ export function PathConfigDialog({ projectId, open, onOpenChange }: PathConfigDi
                 setOriginalDescription(currentDescription);
             }
         } catch (err) {
+            if (err instanceof DOMException && err.name === "AbortError") {
+                return;
+            }
             console.error("Failed to fetch config:", err);
         }
-    };
+    }, [projectId]);
 
     const detectPaths = async () => {
         setDetecting(true);
@@ -161,7 +164,7 @@ export function PathConfigDialog({ projectId, open, onOpenChange }: PathConfigDi
                 return;
             }
             parsedWorkflows = parsed;
-        } catch (err) {
+        } catch {
             setWorkflowsError("Invalid JSON in workflows configuration.");
             return;
         }
@@ -222,9 +225,11 @@ export function PathConfigDialog({ projectId, open, onOpenChange }: PathConfigDi
 
     useEffect(() => {
         if (open) {
-            fetchConfig();
+            const controller = new AbortController();
+            fetchConfig(controller.signal);
+            return () => controller.abort();
         }
-    }, [open, projectId]);
+    }, [open, fetchConfig]);
 
     const handleChange = (key: keyof PathConfig, value: string) => {
         setConfig((prev) => ({ ...prev, [key]: value || undefined }));

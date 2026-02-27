@@ -1,15 +1,18 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { lazy, Suspense, useEffect, useState, useCallback, useRef } from "react";
 import * as React from "react";
 import { Cpu, Box, FileText, MessageSquarePlus, MessageSquare, GitBranch, CircuitBoard, Link2, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Model3DViewer } from "./model-3d-viewer";
 import { CommentOverlay } from "./comment-overlay";
 import { CommentForm } from "./comment-form";
 import { CommentPanel } from "./comment-panel";
 import type { User } from "@/types/auth";
 import type { Comment, CommentContext } from "@/types/comments";
+
+const Model3DViewer = lazy(() =>
+    import("./model-3d-viewer").then((module) => ({ default: module.Model3DViewer }))
+);
 
 // Wrapper to set blob properties immediately via useLayoutEffect
 const EcadBlob = ({ filename, content }: { filename: string; content: string }) => {
@@ -44,6 +47,9 @@ interface CommentsSourceUrls {
     reply_url_template: string;
     delete_url_template: string;
 }
+
+const isAbortError = (error: unknown): boolean =>
+    error instanceof DOMException && error.name === "AbortError";
 
 export function Visualizer({ projectId, user }: VisualizerProps) {
     const [schematicViewerElement, setSchematicViewerElement] = useState<HTMLElement | null>(null);
@@ -115,6 +121,9 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
 
     // Initial Data Fetch
     useEffect(() => {
+        const controller = new AbortController();
+        const signal = controller.signal;
+
         const fetchData = async () => {
             setLoading(true);
             const baseUrl = `/api/projects/${projectId}`;
@@ -122,10 +131,10 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
             try {
                 // Parallel fetch for main assets (excluding schematic and PCB content for now)
                 const [modelRes, ibomRes, commentsRes, filesRes] = await Promise.allSettled([
-                    fetch(`${baseUrl}/3d-model`),
-                    fetch(`${baseUrl}/ibom`),
-                    fetch(`/api/projects/${projectId}/comments`),
-                    fetch(`${baseUrl}/files?type=design`)
+                    fetch(`${baseUrl}/3d-model`, { signal }),
+                    fetch(`${baseUrl}/ibom`, { signal }),
+                    fetch(`/api/projects/${projectId}/comments`, { signal }),
+                    fetch(`${baseUrl}/files?type=design`, { signal })
                 ]);
 
                 // Handle 3D
@@ -133,6 +142,7 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
                 if (filesRes.status === "fulfilled" && filesRes.value.ok) {
                     try {
                         const files = await filesRes.value.json();
+                        if (signal.aborted) return;
                         const glbFile = files.find((f: any) =>
                             f.path.toLowerCase().startsWith("3dmodel/") &&
                             f.name.toLowerCase().endsWith(".glb")
@@ -141,7 +151,9 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
                             glbUrl = `${baseUrl}/asset/Design-Outputs/${glbFile.path}`;
                         }
                     } catch (e) {
-                        console.warn("Error parsing design files", e);
+                        if (!isAbortError(e)) {
+                            console.warn("Error parsing design files", e);
+                        }
                     }
                 }
 
@@ -149,110 +161,166 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
                     setModelUrl(glbUrl);
                 } else if (modelRes.status === "fulfilled" && modelRes.value.ok) {
                     setModelUrl(`${baseUrl}/3d-model`);
+                } else {
+                    setModelUrl(null);
                 }
 
                 // Handle iBoM
                 if (ibomRes.status === "fulfilled" && ibomRes.value.ok) {
                     setIbomUrl(`${baseUrl}/ibom`);
+                } else {
+                    setIbomUrl(null);
                 }
 
                 // Handle Comments
                 if (commentsRes.status === "fulfilled" && commentsRes.value.ok) {
                     const cData = await commentsRes.value.json();
+                    if (signal.aborted) return;
                     setComments(cData.comments || []);
+                } else {
+                    setComments([]);
                 }
 
                 try {
-                    const sourceResponse = await fetch(`/api/projects/${projectId}/comments/source-urls`);
+                    const sourceResponse = await fetch(`/api/projects/${projectId}/comments/source-urls`, { signal });
 
                     if (sourceResponse.ok) {
                         const sourceData = await sourceResponse.json();
+                        if (signal.aborted) return;
                         setCommentsSourceUrls(sourceData);
+                    } else {
+                        setCommentsSourceUrls(null);
                     }
                 } catch (sourceError) {
-                    console.warn("Failed to load comments source URLs", sourceError);
+                    if (!isAbortError(sourceError)) {
+                        console.warn("Failed to load comments source URLs", sourceError);
+                    }
                 }
 
             } catch (err) {
-                console.error("Error loading visualizer data", err);
+                if (!isAbortError(err)) {
+                    console.error("Error loading visualizer data", err);
+                }
             } finally {
-                setLoading(false);
+                if (!signal.aborted) {
+                    setLoading(false);
+                }
             }
         };
 
-        fetchData();
+        void fetchData();
+        return () => controller.abort();
     }, [projectId]);
 
     // Lazy load schematic content when schematic tab is first accessed
     useEffect(() => {
         if (activeTab === "sch" && !schematicContentLoaded) {
+            const controller = new AbortController();
+            const signal = controller.signal;
+
             const loadSchematic = async () => {
                 try {
                     const baseUrl = `/api/projects/${projectId}`;
 
                     const delay = 150;
                     await new Promise(resolve => setTimeout(resolve, delay));
+                    if (signal.aborted) return;
 
                     const [schRes, subsheetsRes] = await Promise.allSettled([
-                        fetch(`${baseUrl}/schematic`),
-                        fetch(`${baseUrl}/schematic/subsheets`)
+                        fetch(`${baseUrl}/schematic`, { signal }),
+                        fetch(`${baseUrl}/schematic/subsheets`, { signal })
                     ]);
 
                     // Handle Schematic
                     if (schRes.status === "fulfilled" && schRes.value.ok) {
                         const schematicText = await schRes.value.text();
+                        if (signal.aborted) return;
                         setSchematicContent(schematicText);
                     } else {
                         console.error("Schematic not found");
+                        setSchematicContent(null);
                     }
 
                     // Handle Subsheets
                     if (subsheetsRes.status === "fulfilled" && subsheetsRes.value.ok) {
                         const data = await subsheetsRes.value.json();
+                        if (signal.aborted) return;
                         if (data.files?.length) {
-                            const subsheetPromises = data.files.map(async (f: any) => {
-                                const cRes = await fetch(f.url);
-                                let filename = f.name || f.path || f.url.split('/').pop() || "subsheet.kicad_sch";
+                            const subsheetResults = await Promise.allSettled(data.files.map(async (f: any) => {
+                                const cRes = await fetch(f.url, { signal });
+                                if (!cRes.ok) {
+                                    throw new Error(`Failed to load subsheet: ${f.url}`);
+                                }
+                                let filename = f.name || f.path || f.url.split("/")?.pop() || "subsheet.kicad_sch";
                                 if (!filename.endsWith('.kicad_sch')) filename += '.kicad_sch';
-                                if (!filename.includes('/') && f.url.includes('Subsheets')) filename = `Subsheets/${filename}`;
+                                if (!filename.includes("/") && f.url.includes("Subsheets")) filename = `Subsheets/${filename}`;
                                 return { filename, content: await cRes.text() };
-                            });
-                            setSubsheets(await Promise.all(subsheetPromises));
+                            }));
+
+                            if (signal.aborted) return;
+
+                            const loadedSubsheets = subsheetResults
+                                .filter((result): result is PromiseFulfilledResult<{ filename: string; content: string }> => result.status === "fulfilled")
+                                .map((result) => result.value);
+                            setSubsheets(loadedSubsheets);
+
+                            subsheetResults
+                                .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+                                .forEach((result) => {
+                                    console.warn("Failed to load one subsheet", result.reason);
+                                });
                         }
+                    } else {
+                        setSubsheets([]);
                     }
                 } catch (err) {
-                    console.error("Error loading schematic content", err);
+                    if (!isAbortError(err)) {
+                        console.error("Error loading schematic content", err);
+                    }
                 } finally {
-                    setSchematicContentLoaded(true);
+                    if (!signal.aborted) {
+                        setSchematicContentLoaded(true);
+                    }
                 }
             };
 
-            loadSchematic();
+            void loadSchematic();
+            return () => controller.abort();
         }
     }, [activeTab, schematicContentLoaded, projectId]);
 
     // Lazy load PCB content when PCB tab is first accessed
     useEffect(() => {
         if (activeTab === "pcb" && !pcbContentLoaded) {
+            const controller = new AbortController();
+            const signal = controller.signal;
+
             const loadPcb = async () => {
                 try {
                     const baseUrl = `/api/projects/${projectId}`;
-                    const pcbRes = await fetch(`${baseUrl}/pcb`);
+                    const pcbRes = await fetch(`${baseUrl}/pcb`, { signal });
 
                     if (pcbRes.ok) {
                         const pcbText = await pcbRes.text();
+                        if (signal.aborted) return;
                         setPcbContent(pcbText);
                     } else {
                         console.error("PCB not found");
+                        setPcbContent(null);
                     }
                 } catch (err) {
-                    console.error("Error loading PCB content", err);
+                    if (!isAbortError(err)) {
+                        console.error("Error loading PCB content", err);
+                    }
                 } finally {
-                    setPcbContentLoaded(true);
+                    if (!signal.aborted) {
+                        setPcbContentLoaded(true);
+                    }
                 }
             };
 
-            loadPcb();
+            void loadPcb();
+            return () => controller.abort();
         }
     }, [activeTab, pcbContentLoaded, projectId]);
 
@@ -260,6 +328,25 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
     useEffect(() => {
         setSchematicContentLoaded(false);
         setPcbContentLoaded(false);
+        setSchematicContent(null);
+        setSubsheets([]);
+        setPcbContent(null);
+        setModelUrl(null);
+        setIbomUrl(null);
+        setComments([]);
+        setCommentsSourceUrls(null);
+        setActivePage("root.kicad_sch");
+        setCommentMode(false);
+        setShowCommentForm(false);
+        setShowCommentPanel(false);
+        setPendingLocation(null);
+        setPendingContext("PCB");
+        setIsSubmittingComment(false);
+        setIsPushingComments(false);
+        setPushMessage(null);
+        setShowPushDialog(false);
+        setIsUrlsPopoverOpen(false);
+        setCopiedField(null);
     }, [projectId]);
 
     // Event Listeners for ecad-viewer
@@ -722,7 +809,13 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
                 {/* 3D View */}
                 {activeTab === "3d" && (
                     <div className="absolute inset-0 z-20 bg-background">
-                        {modelUrl ? <Model3DViewer modelUrl={modelUrl} /> : <div className="p-10">No 3D Model</div>}
+                        {modelUrl ? (
+                            <Suspense fallback={<div className="p-10">Loading 3D Viewer...</div>}>
+                                <Model3DViewer modelUrl={modelUrl} sceneKey={`project:${projectId}:tab:3d`} />
+                            </Suspense>
+                        ) : (
+                            <div className="p-10">No 3D Model</div>
+                        )}
                     </div>
                 )}
 

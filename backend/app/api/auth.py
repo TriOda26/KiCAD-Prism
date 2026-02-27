@@ -73,7 +73,6 @@ async def login(request: TokenRequest):
         )
 
         email = id_info.get("email", "")
-        hd = id_info.get("hd", "")  # Hosted Domain (for Google Workspace accounts)
 
         # Validate allowed users
         if settings.ALLOWED_USERS:

@@ -9,6 +9,7 @@ import { ProjectDetailPage } from './pages/ProjectDetailPage';
 import { Toaster } from 'sonner';
 import { Input } from '@/components/ui/input';
 import { Search } from 'lucide-react';
+import { fetchJson } from '@/lib/api';
 import prismLogoMark from './assets/branding/kicad-prism/kicad-prism-icon.svg';
 
 
@@ -34,32 +35,45 @@ function App() {
 
     // Fetch auth configuration on mount
     useEffect(() => {
+        const controller = new AbortController();
+
         const fetchAuthConfig = async () => {
             try {
-                const res = await fetch('/api/auth/config');
-                if (res.ok) {
-                    const config = await res.json();
-                    setAuthConfig(config);
+                const config = await fetchJson<AuthConfig>(
+                    '/api/auth/config',
+                    { signal: controller.signal },
+                    'Failed to fetch auth config'
+                );
+                if (controller.signal.aborted) {
+                    return;
+                }
 
-                    // If auth is disabled, auto-login as guest
-                    if (!config.auth_enabled) {
-                        const guestUser = { name: 'Guest', email: 'guest@local' };
-                        setUser(guestUser);
-                        localStorage.setItem('auth_user', JSON.stringify(guestUser));
-                    }
+                setAuthConfig(config);
+
+                // If auth is disabled, auto-login as guest
+                if (!config.auth_enabled) {
+                    const guestUser = { name: 'Guest', email: 'guest@local' };
+                    setUser(guestUser);
+                    localStorage.setItem('auth_user', JSON.stringify(guestUser));
                 }
             } catch (err) {
+                if (controller.signal.aborted) {
+                    return;
+                }
                 console.error('Failed to fetch auth config:', err);
                 // On error, default to no auth (allow access)
                 const guestUser = { name: 'Guest', email: 'guest@local' };
                 setUser(guestUser);
                 localStorage.setItem('auth_user', JSON.stringify(guestUser));
             } finally {
-                setLoading(false);
+                if (!controller.signal.aborted) {
+                    setLoading(false);
+                }
             }
         };
 
         fetchAuthConfig();
+        return () => controller.abort();
     }, []);
 
     // Persist user to localStorage when it changes
