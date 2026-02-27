@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
@@ -32,6 +33,7 @@ interface PathConfig {
     readme?: string;
     jobset?: string;
     projectName?: string;
+    workflows?: unknown[];
 }
 
 interface PathConfigDialogProps {
@@ -82,6 +84,10 @@ const PATH_LABELS: Record<string, { label: string; description: string }> = {
 export function PathConfigDialog({ projectId, open, onOpenChange }: PathConfigDialogProps) {
     const [config, setConfig] = useState<PathConfig>({});
     const [originalConfig, setOriginalConfig] = useState<PathConfig>({});
+    const [description, setDescription] = useState<string>("");
+    const [originalDescription, setOriginalDescription] = useState<string>("");
+    const [workflowsText, setWorkflowsText] = useState<string>("[]");
+    const [workflowsError, setWorkflowsError] = useState<string | null>(null);
     const [resolvedPaths, setResolvedPaths] = useState<Record<string, string | null>>({});
     const [source, setSource] = useState<string>("auto-detected");
     const [saving, setSaving] = useState(false);
@@ -90,9 +96,10 @@ export function PathConfigDialog({ projectId, open, onOpenChange }: PathConfigDi
     const fetchConfig = async () => {
         try {
             // Fetch both path config and project name
-            const [configResponse, nameResponse] = await Promise.all([
+            const [configResponse, nameResponse, descriptionResponse] = await Promise.all([
                 fetch(`/api/projects/${projectId}/config`),
-                fetch(`/api/projects/${projectId}/name`)
+                fetch(`/api/projects/${projectId}/name`),
+                fetch(`/api/projects/${projectId}/description`)
             ]);
             
             if (configResponse.ok) {
@@ -101,12 +108,22 @@ export function PathConfigDialog({ projectId, open, onOpenChange }: PathConfigDi
                 setOriginalConfig(data.config || {});
                 setResolvedPaths(data.resolved || {});
                 setSource(data.source || "auto-detected");
+                const workflows = Array.isArray(data?.config?.workflows) ? data.config.workflows : [];
+                setWorkflowsText(JSON.stringify(workflows, null, 2));
+                setWorkflowsError(null);
             }
             
             if (nameResponse.ok) {
                 const nameData = await nameResponse.json();
                 setConfig(prev => ({ ...prev, projectName: nameData.display_name }));
                 setOriginalConfig(prev => ({ ...prev, projectName: nameData.display_name }));
+            }
+
+            if (descriptionResponse.ok) {
+                const descriptionData = await descriptionResponse.json();
+                const currentDescription = descriptionData?.description || "";
+                setDescription(currentDescription);
+                setOriginalDescription(currentDescription);
             }
         } catch (err) {
             console.error("Failed to fetch config:", err);
@@ -132,14 +149,36 @@ export function PathConfigDialog({ projectId, open, onOpenChange }: PathConfigDi
     };
 
     const saveConfig = async () => {
+        if (workflowsError) {
+            return;
+        }
+
+        let parsedWorkflows: unknown[] = [];
+        try {
+            const parsed = JSON.parse(workflowsText || "[]");
+            if (!Array.isArray(parsed)) {
+                setWorkflowsError("Workflows must be a JSON array.");
+                return;
+            }
+            parsedWorkflows = parsed;
+        } catch (err) {
+            setWorkflowsError("Invalid JSON in workflows configuration.");
+            return;
+        }
+
         setSaving(true);
         try {
+            const configPayload = {
+                ...config,
+                workflows: parsedWorkflows,
+            };
+
             // Save both path config and project name
-            const [configResponse, nameResponse] = await Promise.all([
+            const [configResponse, nameResponse, descriptionResponse] = await Promise.all([
                 fetch(`/api/projects/${projectId}/config`, {
                     method: "PUT",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(config),
+                    body: JSON.stringify(configPayload),
                 }),
                 // Only save project name if it has changed
                 config.projectName !== originalConfig.projectName && config.projectName
@@ -148,12 +187,20 @@ export function PathConfigDialog({ projectId, open, onOpenChange }: PathConfigDi
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ display_name: config.projectName }),
                     })
+                    : Promise.resolve({ ok: true }),
+                description !== originalDescription
+                    ? fetch(`/api/projects/${projectId}/description`, {
+                        method: "PUT",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ description }),
+                    })
                     : Promise.resolve({ ok: true })
             ]);
             
             if (configResponse.ok) {
                 const data = await configResponse.json();
-                setOriginalConfig(config);
+                setConfig(configPayload);
+                setOriginalConfig(configPayload);
                 setResolvedPaths(data.resolved || {});
                 setSource("explicit");
             }
@@ -161,6 +208,10 @@ export function PathConfigDialog({ projectId, open, onOpenChange }: PathConfigDi
             if (nameResponse.ok && config.projectName !== originalConfig.projectName) {
                 // Project name saved successfully
                 console.log("Project name updated");
+            }
+
+            if (descriptionResponse.ok && description !== originalDescription) {
+                setOriginalDescription(description);
             }
         } catch (err) {
             console.error("Failed to save config:", err);
@@ -179,7 +230,10 @@ export function PathConfigDialog({ projectId, open, onOpenChange }: PathConfigDi
         setConfig((prev) => ({ ...prev, [key]: value || undefined }));
     };
 
-    const hasChanges = JSON.stringify(config) !== JSON.stringify(originalConfig);
+    const hasChanges =
+        JSON.stringify(config) !== JSON.stringify(originalConfig) ||
+        description !== originalDescription ||
+        workflowsText !== JSON.stringify(Array.isArray(originalConfig.workflows) ? originalConfig.workflows : [], null, 2);
 
     const getStatusIcon = (key: string) => {
         const resolved = resolvedPaths[key];
@@ -210,7 +264,7 @@ export function PathConfigDialog({ projectId, open, onOpenChange }: PathConfigDi
                         Project Settings
                     </DialogTitle>
                     <DialogDescription>
-                        Configure project name and folder/file paths for this project.
+                        Configure project metadata, workflows, and folder/file paths for this project.
                         <div className="flex items-center gap-2 mt-2">
                             <Badge variant={source === "explicit" ? "default" : "secondary"}>
                                 {source}
@@ -257,6 +311,57 @@ export function PathConfigDialog({ projectId, open, onOpenChange }: PathConfigDi
                             </p>
                         </div>
 
+                        <div className="space-y-1.5">
+                            <Label htmlFor="projectDescription" className="text-sm font-medium">
+                                Project Description
+                            </Label>
+                            <Textarea
+                                id="projectDescription"
+                                value={description}
+                                onChange={(e) => setDescription(e.target.value)}
+                                placeholder="Describe this project"
+                                className="min-h-20"
+                            />
+                            <p className="text-xs text-muted-foreground">
+                                Used in workspace listings and project search metadata.
+                            </p>
+                        </div>
+
+                        <Separator />
+
+                        <div className="space-y-1.5">
+                            <Label htmlFor="workflowsJson" className="text-sm font-medium">
+                                Workflows (JSON Array)
+                            </Label>
+                            <Textarea
+                                id="workflowsJson"
+                                value={workflowsText}
+                                onChange={(e) => {
+                                    const nextText = e.target.value;
+                                    setWorkflowsText(nextText);
+                                    try {
+                                        const parsed = JSON.parse(nextText || "[]");
+                                        if (!Array.isArray(parsed)) {
+                                            setWorkflowsError("Workflows must be a JSON array.");
+                                        } else {
+                                            setWorkflowsError(null);
+                                        }
+                                    } catch {
+                                        setWorkflowsError("Invalid JSON in workflows configuration.");
+                                    }
+                                }}
+                                placeholder='[{"id":"design","name":"Design Outputs",...}]'
+                                className="min-h-40 font-mono text-xs"
+                            />
+                            {workflowsError ? (
+                                <p className="text-xs text-red-500">{workflowsError}</p>
+                            ) : (
+                                <p className="text-xs text-muted-foreground">
+                                    Configure project workflows directly in `.prism.json` from this dialog.
+                                </p>
+                            )}
+                        </div>
+
                         <Separator />
 
                         {/* Path Configuration Fields */}
@@ -281,7 +386,7 @@ export function PathConfigDialog({ projectId, open, onOpenChange }: PathConfigDi
                                 </div>
                                 <Input
                                     id={key}
-                                    value={config[key as keyof PathConfig] || ""}
+                                    value={(config[key as keyof PathConfig] as string) || ""}
                                     onChange={(e) => handleChange(key as keyof PathConfig, e.target.value)}
                                     placeholder={description}
                                     className="h-8"

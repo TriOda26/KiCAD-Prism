@@ -165,12 +165,13 @@ def get_registered_projects() -> List[Project]:
         
         # Get custom display name from .prism.json
         custom_display_name = path_config_service.get_project_display_name(normalized_path)
+        custom_description = path_config_service.get_project_description(normalized_path)
         
         projects.append(Project(
             id=project_id,
             name=data["name"],
             display_name=custom_display_name,
-            description=data.get("description", f"Project {data['name']}"),
+            description=custom_description or data.get("description", f"Project {data['name']}"),
             path=normalized_path,
             last_modified=last_modified,
             thumbnail_url=f"/api/projects/{project_id}/thumbnail",
@@ -216,12 +217,13 @@ def get_project_by_id(project_id: str) -> Optional[Project]:
         last_modified = data.get("last_modified", "Unknown")
         
     custom_display_name = path_config_service.get_project_display_name(normalized_path)
+    custom_description = path_config_service.get_project_description(normalized_path)
     
     return Project(
         id=project_id,
         name=data["name"],
         display_name=custom_display_name,
-        description=data.get("description", f"Project {data['name']}"),
+        description=custom_description or data.get("description", f"Project {data['name']}"),
         path=normalized_path,
         last_modified=last_modified,
         thumbnail_url=f"/api/projects/{project_id}/thumbnail",
@@ -726,6 +728,32 @@ def update_project_folder_id(project_id: str, folder_id: Optional[str]) -> bool:
     _save_project_registry(registry)
 
     # Clear projects cache so subsequent reads include updated folder_id.
+    global _projects_cache, _projects_cache_time
+    _projects_cache = []
+    _projects_cache_time = 0
+    return True
+
+
+def update_project_description(project_id: str, description: str) -> bool:
+    """
+    Persist project description in .prism.json.
+    Falls back to registry only for project lookup and backward compatibility.
+    Returns False if project does not exist.
+    """
+    project = get_project_by_id(project_id)
+    if not project:
+        return False
+
+    config = path_config_service.get_path_config(project.path)
+    config.description = description
+    path_config_service.save_path_config(project.path, config)
+
+    # Keep registry mirrored for legacy fallback/search compatibility on older code paths.
+    registry = _load_project_registry()
+    if project_id in registry:
+        registry[project_id]["description"] = description
+        _save_project_registry(registry)
+
     global _projects_cache, _projects_cache_time
     _projects_cache = []
     _projects_cache_time = 0

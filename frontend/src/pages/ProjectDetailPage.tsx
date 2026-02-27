@@ -246,13 +246,11 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
                 {/* Path Config Button */}
                 <Button
                     variant="outline"
-                    size="sm"
+                    size="icon"
                     onClick={() => setPathConfigOpen(true)}
-                    className="flex items-center gap-2"
-                    title="Configure paths"
+                    title="Project settings"
                 >
                     <Settings className="h-4 w-4" />
-                    <span className="hidden md:inline">Paths</span>
                 </Button>
 
                 {projectId && (

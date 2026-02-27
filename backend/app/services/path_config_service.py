@@ -98,6 +98,8 @@ class PathConfig(BaseModel):
     readme: Optional[str] = None
     jobset: Optional[str] = None
     project_name: Optional[str] = None
+    description: Optional[str] = None
+    workflows: Optional[List[Any]] = None
     
     class Config:
         extra = "allow"  # Allow additional custom paths
@@ -133,7 +135,7 @@ def _normalize_config_values(config: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize loaded config values for path fields and project name."""
     normalized: Dict[str, Any] = {}
     for key, value in config.items():
-        if key in PATH_FIELDS or key == "project_name":
+        if key in PATH_FIELDS or key in {"project_name", "description"}:
             normalized[key] = _normalize_optional_string(value)
         else:
             normalized[key] = value
@@ -476,6 +478,20 @@ def get_project_display_name(project_path: str) -> Optional[str]:
     return config.project_name if config.project_name else None
 
 
+def get_project_description(project_path: str) -> Optional[str]:
+    """
+    Get project description from .prism.json.
+
+    Args:
+        project_path: Absolute path to project root
+
+    Returns:
+        Description from .prism.json or None if not set
+    """
+    config = get_path_config(project_path)  # Use cache by default
+    return config.description if config.description else None
+
+
 def save_path_config(project_path: str, config: PathConfig) -> None:
     """
     Save path configuration to .prism.json.
@@ -508,7 +524,7 @@ def save_path_config(project_path: str, config: PathConfig) -> None:
             existing["paths"][field] = config_dict[field]
     
     # Non-path fields go at top level
-    non_path_fields = ["project_name"]
+    non_path_fields = ["project_name", "description", "workflows"]
     for field in non_path_fields:
         if field in config_dict:
             existing[field] = config_dict[field]
@@ -552,6 +568,9 @@ def validate_config(project_path: str, config: PathConfig) -> Dict[str, Any]:
     
     # Validate each path
     for key, value in config.dict().items():
+        if key not in PATH_FIELDS:
+            continue
+
         if not value:
             continue
             

@@ -691,6 +691,10 @@ class ProjectNameRequest(BaseModel):
     display_name: str
 
 
+class ProjectDescriptionRequest(BaseModel):
+    description: str
+
+
 @router.get("/{project_id}/name")
 async def get_project_name(project_id: str):
     """
@@ -728,4 +732,41 @@ async def update_project_name(project_id: str, request: ProjectNameRequest):
     return {
         "display_name": request.display_name,
         "message": "Project name updated successfully"
+    }
+
+
+@router.get("/{project_id}/description")
+async def get_project_description(project_id: str):
+    """
+    Get project description from project registry.
+    """
+    project = project_service.get_project_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return {
+        "description": project.description
+    }
+
+
+@router.put("/{project_id}/description")
+async def update_project_description(project_id: str, request: ProjectDescriptionRequest):
+    """
+    Update project description in project registry.
+    """
+    project = project_service.get_project_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    next_description = request.description.strip()
+    if not next_description:
+        next_description = f"Project {project.name}"
+
+    updated = project_service.update_project_description(project_id, next_description)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return {
+        "description": next_description,
+        "message": "Project description updated successfully"
     }
