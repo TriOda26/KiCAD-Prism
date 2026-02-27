@@ -2,6 +2,7 @@ import * as React from "react";
 import { useEffect, useState, useCallback } from "react";
 import { Check, MessageSquare } from "lucide-react";
 import type { Comment } from "@/types/comments";
+import type { ECadViewerElement } from "@/types/ecad-viewer";
 import {
     Tooltip,
     TooltipContent,
@@ -13,7 +14,7 @@ interface CommentOverlayProps {
     /** List of comments to display */
     comments: Comment[];
     /** Reference to the ecad-viewer element for coordinate transforms */
-    viewerRef: React.RefObject<HTMLElement>;
+    viewerRef: React.RefObject<ECadViewerElement | null>;
     /** Callback when a comment pin is clicked */
     onPinClick?: (comment: Comment) => void;
     /** Whether to show resolved comments (dimmed) */
@@ -52,32 +53,36 @@ export function CommentOverlay({
     const updatePositions = useCallback(() => {
         if (!viewerRef.current) return;
 
-        const viewer = viewerRef.current as any;
-        // Check if the viewer has the helper method we added
+        const viewer = viewerRef.current;
         if (!viewer.getScreenLocation) return;
 
-        const rect = viewer.getBoundingClientRect();
-        const newPositions = new Map<string, PinPosition>();
+        try {
+            const rect = viewer.getBoundingClientRect();
+            const newPositions = new Map<string, PinPosition>();
 
-        for (const comment of comments) {
-            const screenPos = viewer.getScreenLocation(
-                comment.location.x,
-                comment.location.y
-            );
+            for (const comment of comments) {
+                const screenPos = viewer.getScreenLocation(
+                    comment.location.x,
+                    comment.location.y
+                );
 
-            if (!screenPos) continue;
+                if (!screenPos) continue;
 
-            // Check if position is within visible viewport
-            const visible =
-                screenPos.x >= 0 &&
-                screenPos.x <= rect.width &&
-                screenPos.y >= 0 &&
-                screenPos.y <= rect.height;
+                // Check if position is within visible viewport
+                const visible =
+                    screenPos.x >= 0 &&
+                    screenPos.x <= rect.width &&
+                    screenPos.y >= 0 &&
+                    screenPos.y <= rect.height;
 
-            newPositions.set(comment.id, { x: screenPos.x, y: screenPos.y, visible });
+                newPositions.set(comment.id, { x: screenPos.x, y: screenPos.y, visible });
+            }
+
+            setPinPositions(newPositions);
+        } catch {
+            // Viewer internals can be transiently unavailable during load/remount.
+            // Ignore and retry on the next scheduled update.
         }
-
-        setPinPositions(newPositions);
     }, [comments, viewerRef]);
 
     // Update positions on any viewer interaction

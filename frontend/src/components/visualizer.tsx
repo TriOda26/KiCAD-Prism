@@ -93,6 +93,8 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
     const [commentsSourceUrls, setCommentsSourceUrls] = useState<CommentsSourceUrls | null>(null);
     const [isUrlsPopoverOpen, setIsUrlsPopoverOpen] = useState(false);
     const [copiedField, setCopiedField] = useState<string | null>(null);
+    const lastSchDesignatorRef = useRef<string | null>(null);
+    const lastPcbDesignatorRef = useRef<string | null>(null);
     const activeCommentContext: CommentContext | null = activeTab === "sch" ? "SCH" : activeTab === "pcb" ? "PCB" : null;
 
     const applyCommentModeToViewer = useCallback((viewer: ECadViewerElement | null, enabled: boolean) => {
@@ -108,6 +110,98 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
             viewer.removeAttribute("comment-mode");
         }
     }, []);
+
+    const normalizeDesignator = useCallback((value: unknown): string | null => {
+        if (typeof value !== "string") return null;
+        const trimmed = value.trim();
+        if (!trimmed) return null;
+        return /^[A-Za-z]+\d+/.test(trimmed) ? trimmed : null;
+    }, []);
+
+    const extractDesignatorFromSelection = useCallback((item: unknown): string | null => {
+        const findDesignator = (value: unknown, depth = 0): string | null => {
+            if (!value || typeof value !== "object" || depth > 3) return null;
+            const entry = value as Record<string, unknown>;
+
+            const direct = [
+                entry.reference,
+                entry.Reference,
+                entry.designator,
+                entry.elementRef,
+                entry.ref,
+                entry.Ref,
+            ];
+            for (const candidate of direct) {
+                const designator = normalizeDesignator(candidate);
+                if (designator) return designator;
+            }
+
+            if (typeof entry.get_property_text === "function") {
+                try {
+                    const fromProperty = normalizeDesignator(
+                        (entry.get_property_text as (name: string) => unknown)("Reference")
+                    );
+                    if (fromProperty) return fromProperty;
+                } catch {
+                    // noop
+                }
+            }
+
+            const properties = entry.properties;
+            if (properties instanceof Map) {
+                const refProp = properties.get("Reference");
+                if (refProp && typeof refProp === "object") {
+                    const propEntry = refProp as Record<string, unknown>;
+                    const fromMap = normalizeDesignator(
+                        propEntry.shown_text ?? propEntry.text ?? propEntry.value
+                    );
+                    if (fromMap) return fromMap;
+                }
+            }
+
+            const defaultInstance = entry.default_instance;
+            if (defaultInstance && typeof defaultInstance === "object") {
+                const fromDefault = normalizeDesignator(
+                    (defaultInstance as Record<string, unknown>).reference
+                );
+                if (fromDefault) return fromDefault;
+            }
+
+            return (
+                findDesignator(entry.parent, depth + 1) ||
+                findDesignator(entry.item, depth + 1) ||
+                findDesignator(entry.context, depth + 1)
+            );
+        };
+
+        return findDesignator(item);
+    }, [normalizeDesignator]);
+
+    const runCrossProbe = useCallback(
+        function runCrossProbe(
+            targetViewer: ECadViewerElement | null,
+            sourceContext: "SCH" | "PCB",
+            designator: string,
+            attempts = 0
+        ) {
+            if (!targetViewer) return;
+            const result = targetViewer.requestCrossProbe({
+                sourceContext,
+                targetContext: sourceContext === "SCH" ? "PCB" : "SCH",
+                mode: "select",
+                kind: "designator",
+                value: designator,
+                designator,
+            });
+
+            if (!result.resolved && result.reason === "target-not-available" && attempts < 12) {
+                window.setTimeout(() => {
+                    runCrossProbe(targetViewer, sourceContext, designator, attempts + 1);
+                }, 120);
+            }
+        },
+        [],
+    );
 
     const copyToClipboard = async (label: string, value: string) => {
         try {
@@ -432,6 +526,44 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
         schematicViewerRef.current?.setCrossProbeEnabled(true);
         pcbViewerRef.current?.setCrossProbeEnabled(true);
     }, [schematicViewerElement, pcbViewerElement]);
+
+    useEffect(() => {
+        const schematicViewer = schematicViewerElement;
+        const pcbViewer = pcbViewerElement;
+        if (!schematicViewer && !pcbViewer) return;
+
+        const onSchematicSelect = (event: Event) => {
+            const detail = (event as CustomEvent<{ item?: unknown }>).detail;
+            const designator = extractDesignatorFromSelection(detail?.item);
+            if (!designator) return;
+            lastSchDesignatorRef.current = designator;
+            runCrossProbe(pcbViewerRef.current, "SCH", designator);
+        };
+
+        const onPcbSelect = (event: Event) => {
+            const detail = (event as CustomEvent<{ item?: unknown }>).detail;
+            const designator = extractDesignatorFromSelection(detail?.item);
+            if (!designator) return;
+            lastPcbDesignatorRef.current = designator;
+            runCrossProbe(schematicViewerRef.current, "PCB", designator);
+        };
+
+        schematicViewer?.addEventListener("kicanvas:select", onSchematicSelect as EventListener);
+        pcbViewer?.addEventListener("kicanvas:select", onPcbSelect as EventListener);
+
+        return () => {
+            schematicViewer?.removeEventListener("kicanvas:select", onSchematicSelect as EventListener);
+            pcbViewer?.removeEventListener("kicanvas:select", onPcbSelect as EventListener);
+        };
+    }, [schematicViewerElement, pcbViewerElement, extractDesignatorFromSelection, runCrossProbe]);
+
+    useEffect(() => {
+        if (activeTab === "pcb" && lastSchDesignatorRef.current) {
+            runCrossProbe(pcbViewerRef.current, "SCH", lastSchDesignatorRef.current);
+        } else if (activeTab === "sch" && lastPcbDesignatorRef.current) {
+            runCrossProbe(schematicViewerRef.current, "PCB", lastPcbDesignatorRef.current);
+        }
+    }, [activeTab, runCrossProbe, schematicViewerElement, pcbViewerElement]);
 
     // Submit Comment
     const handleSubmitComment = async (content: string) => {
