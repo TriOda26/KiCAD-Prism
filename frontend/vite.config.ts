@@ -18,4 +18,21 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules/online-3d-viewer")) {
+            return "viewer3d-runtime"
+          }
+          if (id.includes("node_modules/three")) {
+            return "three-runtime"
+          }
+          if (id.includes("node_modules")) {
+            return "vendor"
+          }
+        },
+      },
+    },
+  },
 })

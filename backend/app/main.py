@@ -19,27 +19,29 @@ import logging
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+SUBPROCESS_TIMEOUT_SECONDS = 8
+KNOWN_GIT_HOSTS = ("github.com", "gitlab.com")
 
 def configure_git():
     """Configure Git with GITHUB_TOKEN if available."""
     if settings.GITHUB_TOKEN:
-        logger.info(f"Configuring Git to use GITHUB_TOKEN...")
+        logger.info("Configuring Git to use GITHUB_TOKEN...")
         try:
             # git config --global url."https://${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
             token_url = f"https://{settings.GITHUB_TOKEN}@github.com/"
             subprocess.run(
                 ["git", "config", "--global", f"url.{token_url}.insteadOf", "https://github.com/"],
-                check=True
+                check=True,
+                timeout=SUBPROCESS_TIMEOUT_SECONDS,
             )
             logger.info("Git successfully configured with token injection.")
-        except Exception as e:
-            logger.error(f"Failed to configure Git with token: {e}")
+        except (subprocess.SubprocessError, OSError) as error:
+            logger.error("Failed to configure Git with token: %s", error)
 
 def scan_known_hosts():
     """Scan and add GitHub/GitLab to known_hosts if missing."""
     ssh_dir = Path.home() / ".ssh"
     known_hosts = ssh_dir / "known_hosts"
-    hosts = ["github.com", "gitlab.com"]
     
     # Ensure known_hosts exists
     if not known_hosts.exists():
@@ -49,25 +51,27 @@ def scan_known_hosts():
             logger.error(f"Failed to create known_hosts file: {e}")
             return
 
-    for host in hosts:
+    for host in KNOWN_GIT_HOSTS:
         try:
             # Check if host is already known using ssh-keygen -F (Find)
             # This checks hashed hosts too
             result = subprocess.run(
-                ["ssh-keygen", "-F", host], 
-                capture_output=True
+                ["ssh-keygen", "-F", host],
+                capture_output=True,
+                timeout=SUBPROCESS_TIMEOUT_SECONDS,
             )
             
             if result.returncode != 0:
                 logger.info(f"Host {host} not found in known_hosts. Scanning...")
                 # Scan and append to known_hosts
                 scan = subprocess.run(
-                    ["ssh-keyscan", "-H", host], 
-                    capture_output=True, 
-                    text=True
+                    ["ssh-keyscan", "-H", host],
+                    capture_output=True,
+                    text=True,
+                    timeout=SUBPROCESS_TIMEOUT_SECONDS,
                 )
                 if scan.returncode == 0 and scan.stdout:
-                    with open(known_hosts, "a") as f:
+                    with open(known_hosts, "a", encoding="utf-8") as f:
                         f.write(scan.stdout)
                     logger.info(f"Successfully added {host} to known_hosts.")
                 else:
@@ -75,8 +79,8 @@ def scan_known_hosts():
             else:
                 logger.debug(f"Host {host} already in known_hosts.")
                 
-        except Exception as e:
-            logger.error(f"Error checking/scanning host {host}: {e}")
+        except (subprocess.SubprocessError, OSError) as error:
+            logger.error("Error checking/scanning host %s: %s", host, error)
 
 def ensure_ssh_dir():
     """Ensure ~/.ssh exists and has correct permissions."""
@@ -88,8 +92,8 @@ def ensure_ssh_dir():
         scan_known_hosts()
         
         logger.info("SSH directory configured correctly.")
-    except Exception as e:
-        logger.error(f"Failed to configure SSH directory: {e}")
+    except OSError as error:
+        logger.error("Failed to configure SSH directory: %s", error)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

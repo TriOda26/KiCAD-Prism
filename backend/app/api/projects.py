@@ -1,17 +1,28 @@
 import os
 import subprocess
+from pathlib import Path
+from typing import List, Optional
+
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
-from typing import List, Optional
-from app.services import project_service, file_service, path_config_service
-from app.services.git_service import (get_releases, get_commits_list, get_file_from_commit, get_releases_filtered, get_commits_list_filtered, get_file_from_commit_with_prefix)
-from app.services.path_config_service import PathConfig
-from app.services.comments_url_service import build_comments_source_urls, resolve_comments_base_url
+from pydantic import BaseModel
+
 from app.api._helpers import get_project_or_404, require_output_type, resolve_path_within_root
+from app.services import file_service, path_config_service, project_import_service, project_service
+from app.services.comments_url_service import build_comments_source_urls, resolve_comments_base_url
+from app.services.git_service import (
+    get_commits_list,
+    get_commits_list_filtered,
+    get_file_from_commit,
+    get_file_from_commit_with_prefix,
+    get_releases,
+    get_releases_filtered,
+)
+from app.services.path_config_service import PathConfig
 
 router = APIRouter()
 
-from pydantic import BaseModel
+ARCHIVE_DIR_NAMES = {"archive", "archived", "old", "backup", "backups", "obsolete"}
 
 class Monorepo(BaseModel):
     name: str
@@ -26,6 +37,31 @@ def _repo_context(project: project_service.Project) -> tuple[str, Optional[str]]
     if project.import_type == "type2_subproject":
         return project.parent_repo_path or os.path.dirname(project.path), project.sub_path
     return project.path, None
+
+
+def _resolve_output_dir(project_path: str, output_type: str) -> str:
+    resolved = path_config_service.resolve_paths(project_path)
+    output_dir = (
+        resolved.design_outputs_dir
+        if output_type == "design"
+        else resolved.manufacturing_outputs_dir
+    )
+    if not output_dir:
+        raise HTTPException(status_code=404, detail=f"{output_type} outputs folder not configured")
+    return output_dir
+
+
+def _read_utf8_file(file_path: str | Path, *, not_found_detail: str, read_error_prefix: str) -> str:
+    path = Path(file_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=not_found_detail)
+    if path.is_dir():
+        raise HTTPException(status_code=400, detail="Cannot read directory")
+
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise HTTPException(status_code=500, detail=f"{read_error_prefix}: {error}") from error
 
 
 def _read_file_from_commit(
@@ -70,7 +106,7 @@ async def list_monorepos():
             if project.parent_repo:
                 projects_by_repo.setdefault(project.parent_repo, []).append(project)
 
-        for repo_name in os.listdir(project_service.MONOREPOS_ROOT):
+        for repo_name in sorted(os.listdir(project_service.MONOREPOS_ROOT)):
             repo_path = os.path.join(project_service.MONOREPOS_ROOT, repo_name)
             if not os.path.isdir(repo_path) or repo_name.startswith('.'):
                 continue
@@ -83,12 +119,14 @@ async def list_monorepos():
             if os.path.exists(git_dir):
                 try:
                     result = subprocess.run(
-                        ['git', '-C', repo_path, 'log', '-1', '--format=%ci'],
-                        capture_output=True, text=True
+                        ["git", "-C", repo_path, "log", "-1", "--format=%ci"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
                     )
                     if result.returncode == 0:
                         last_synced = result.stdout.strip()
-                except Exception:
+                except (subprocess.SubprocessError, OSError):
                     pass
             
             # Get repo URL from first project
@@ -126,46 +164,42 @@ async def get_monorepo_structure(repo_name: str, subpath: str = ""):
     all_registered = project_service.get_registered_projects()
     repo_projects = {p.sub_path: p for p in all_registered if p.parent_repo == repo_name}
     
-    for item in os.listdir(current_path):
-        item_path = os.path.join(current_path, item)
+    for item_path in current_path.iterdir():
+        if not item_path.is_dir():
+            continue
+
+        item_name = item_path.name
+        if item_name.startswith(".") or item_name.lower() in ARCHIVE_DIR_NAMES:
+            continue
+
         relative_path = os.path.relpath(item_path, repo_path)
-        
-        if os.path.isdir(item_path):
-            # Skip hidden directories and archive folders
-            if item.startswith('.') or item.lower() in ['archive', 'archived', 'old', 'backup', 'backups', 'obsolete']:
-                continue
-            
-            # Count items in folder (for display)
-            try:
-                item_count = len(os.listdir(item_path))
-            except Exception:
-                item_count = 0
-            
-            folders.append({
-                "name": item,
-                "path": relative_path,
-                "item_count": item_count
-            })
-        
-        # Check if this directory contains a .kicad_pro file
-        if os.path.isdir(item_path):
-            pro_files = [f for f in os.listdir(item_path) if f.endswith('.kicad_pro')]
-            if pro_files:
-                # This is a KiCAD project
-                project = repo_projects.get(relative_path)
-                if project:
-                    # Get custom display name for this project
-                    full_project_path = os.path.join(current_path, item)
-                    custom_display_name = path_config_service.get_project_display_name(full_project_path)
-                    
-                    projects.append({
-                        "id": project.id,
-                        "name": project.name,
-                        "display_name": custom_display_name,
-                        "relative_path": relative_path,
-                        "has_thumbnail": project_service.get_project_thumbnail_path(project.id) is not None,
-                        "last_modified": project.last_modified
-                    })
+
+        # Count items in folder (for display)
+        try:
+            child_names = os.listdir(item_path)
+            item_count = len(child_names)
+        except OSError:
+            child_names = []
+            item_count = 0
+
+        folders.append({
+            "name": item_name,
+            "path": relative_path,
+            "item_count": item_count
+        })
+
+        if any(name.endswith(".kicad_pro") for name in child_names):
+            project = repo_projects.get(relative_path)
+            if project:
+                custom_display_name = path_config_service.get_project_display_name(str(item_path))
+                projects.append({
+                    "id": project.id,
+                    "name": project.name,
+                    "display_name": custom_display_name,
+                    "relative_path": relative_path,
+                    "has_thumbnail": project_service.get_project_thumbnail_path(project.id) is not None,
+                    "last_modified": project.last_modified
+                })
     
     return {
         "repo_name": repo_name,
@@ -175,15 +209,18 @@ async def get_monorepo_structure(repo_name: str, subpath: str = ""):
     }
 
 @router.get("/search")
-async def search_projects(q: str = ""):
+async def search_projects(
+    q: str = "",
+    limit: int = Query(default=100, ge=1, le=500),
+):
     """
     Search across all projects (standalone and monorepo sub-projects).
     Returns matching projects based on name and description.
     """
-    if not q:
+    query = q.strip().lower()
+    if not query:
         return {"results": []}
-    
-    query = q.lower()
+
     all_projects = project_service.get_registered_projects()
     
     results = []
@@ -200,10 +237,10 @@ async def search_projects(q: str = ""):
                 "last_modified": project.last_modified,
                 "thumbnail_url": f"/api/projects/{project.id}/thumbnail"
             })
+            if len(results) >= limit:
+                break
     
     return {"results": results}
-
-from app.services import project_import_service
 
 class AnalyzeRequest(BaseModel):
     url: str
@@ -369,16 +406,7 @@ async def download_file(project_id: str, path: str, type: str = "design", inline
     """
     output_type = require_output_type(type)
     project = get_project_or_404(project_id)
-    
-    # Get output directory from path config
-    resolved = path_config_service.resolve_paths(project.path)
-    if output_type == "design":
-        output_dir = resolved.design_outputs_dir
-    else:
-        output_dir = resolved.manufacturing_outputs_dir
-    
-    if not output_dir:
-        raise HTTPException(status_code=404, detail=f"{output_type} outputs folder not configured")
+    output_dir = _resolve_output_dir(project.path, output_type)
 
     file_path = resolve_path_within_root(output_dir, path, invalid_detail="Invalid file path")
 
@@ -415,16 +443,17 @@ async def get_project_readme(project_id: str, commit: str = None):
     # Otherwise read from filesystem
     resolved = path_config_service.resolve_paths(project.path)
     readme_path = resolved.readme_path
-    
-    if not readme_path or not os.path.exists(readme_path):
+
+    if not readme_path:
         raise HTTPException(status_code=404, detail="README not found")
-    
-    try:
-        with open(readme_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        return {"content": content}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading README: {str(e)}")
+
+    return {
+        "content": _read_utf8_file(
+            readme_path,
+            not_found_detail="README not found",
+            read_error_prefix="Error reading README",
+        )
+    }
 
 @router.get("/{project_id}/asset/{asset_path:path}")
 async def get_project_asset(project_id: str, asset_path: str):
@@ -488,16 +517,14 @@ async def get_doc_file_content(project_id: str, path: str, commit: str = None):
         raise HTTPException(status_code=404, detail="Documentation folder not found")
     
     file_path = resolve_path_within_root(docs_dir, path, invalid_detail="Invalid file path")
-
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        return {"content": content, "path": path}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
+    return {
+        "content": _read_utf8_file(
+            file_path,
+            not_found_detail="File not found",
+            read_error_prefix="Error reading file",
+        ),
+        "path": path,
+    }
 
 @router.get("/{project_id}/releases")
 async def get_project_releases(project_id: str):
@@ -516,7 +543,7 @@ async def get_project_releases(project_id: str):
     return {"releases": releases}
 
 @router.get("/{project_id}/commits")
-async def get_project_commits(project_id: str, limit: int = 50):
+async def get_project_commits(project_id: str, limit: int = Query(default=50, ge=1, le=500)):
     """
     Get list of commits for a project.
     For Type-2 projects, shows only commits affecting the subproject.
@@ -549,7 +576,7 @@ async def get_project_subsheets(project_id: str):
     if not main_path:
         raise HTTPException(status_code=404, detail="Schematic not found")
         
-    subsheets = project_service.get_subsheets(project.path, main_path)
+    subsheets = sorted(project_service.get_subsheets(project.path, main_path))
     # Convert filenames to URLs
     subsheet_urls = [{"name": s, "url": f"/api/projects/{project_id}/asset/{s}"} for s in subsheets]
     return {"files": subsheet_urls}
@@ -596,8 +623,8 @@ async def get_project_config(project_id: str):
     resolved = path_config_service.resolve_paths(project.path, config)
     
     return {
-        "config": config.dict(),
-        "resolved": resolved.dict(),
+        "config": config.model_dump(),
+        "resolved": resolved.model_dump(),
         "source": "explicit" if path_config_service._load_prism_config(project.path) else "auto-detected"
     }
 
@@ -613,7 +640,7 @@ async def detect_project_paths(project_id: str):
     detected = path_config_service.detect_paths(project.path)
     
     return {
-        "detected": detected.dict(),
+        "detected": detected.model_dump(),
         "validation": path_config_service.validate_config(project.path, detected)
     }
 
@@ -639,8 +666,8 @@ async def update_project_config(project_id: str, config: PathConfig):
     resolved = path_config_service.resolve_paths(project.path, config)
     
     return {
-        "config": config.dict(),
-        "resolved": resolved.dict(),
+        "config": config.model_dump(),
+        "resolved": resolved.model_dump(),
         "validation": validation
     }
 
@@ -674,17 +701,21 @@ async def update_project_name(project_id: str, request: ProjectNameRequest):
     """
     project = get_project_or_404(project_id)
     
+    display_name = request.display_name.strip()
+    if not display_name:
+        raise HTTPException(status_code=400, detail="Display name cannot be empty")
+
     # Get current config
     config = path_config_service.get_path_config(project.path)
     
     # Update project name
-    config.project_name = request.display_name.strip()
+    config.project_name = display_name
     
     # Save to .prism.json
     path_config_service.save_path_config(project.path, config)
     
     return {
-        "display_name": request.display_name,
+        "display_name": display_name,
         "message": "Project name updated successfully"
     }
 

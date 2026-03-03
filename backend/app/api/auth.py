@@ -3,18 +3,21 @@ Authentication API endpoints.
 
 Handles Google OAuth login and domain validation.
 """
+import logging
+
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from google.oauth2 import id_token
 from google.auth.transport import requests
 from app.core.config import settings
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class TokenRequest(BaseModel):
     """Request body for login endpoint."""
-    token: str
+    token: str = Field(min_length=1)
 
 
 class UserSession(BaseModel):
@@ -30,6 +33,22 @@ class AuthConfig(BaseModel):
     dev_mode: bool
     google_client_id: str
     workspace_name: str
+
+
+def _guest_user_session() -> UserSession:
+    return UserSession(email="guest@local", name="Guest User", picture="")
+
+
+def _validate_allowed_user(email: str) -> None:
+    if not settings.ALLOWED_USERS:
+        return
+
+    allowed_users = {user.strip().casefold() for user in settings.ALLOWED_USERS if user.strip()}
+    if email.casefold() not in allowed_users:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. Your email is not in the allowed users list.",
+        )
 
 
 @router.get("/config", response_model=AuthConfig)
@@ -58,11 +77,7 @@ async def login(request: TokenRequest):
     # If auth is disabled, this endpoint shouldn't normally be called,
     # but handle gracefully just in case
     if not settings.AUTH_ENABLED:
-        return UserSession(
-            email="guest@local",
-            name="Guest User",
-            picture=""
-        )
+        return _guest_user_session()
     
     try:
         # Verify the token with Google
@@ -72,15 +87,11 @@ async def login(request: TokenRequest):
             settings.GOOGLE_CLIENT_ID
         )
 
-        email = id_info.get("email", "")
+        email = (id_info.get("email") or "").strip()
+        if not email:
+            raise HTTPException(status_code=401, detail="Invalid token")
 
-        # Validate allowed users
-        if settings.ALLOWED_USERS:
-            if email.lower() not in settings.ALLOWED_USERS:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Access denied. Your email is not in the allowed users list."
-                )
+        _validate_allowed_user(email)
 
         return UserSession(
             email=email,
@@ -88,12 +99,13 @@ async def login(request: TokenRequest):
             picture=id_info.get("picture", "")
         )
 
-    except ValueError as e:
+    except ValueError:
         # Token verification failed
-        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
+        raise HTTPException(status_code=401, detail="Invalid token")
     except HTTPException:
         # Re-raise HTTP exceptions (like 403 for domain validation)
         raise
-    except Exception as e:
+    except Exception:
         # Catch-all for unexpected errors
-        raise HTTPException(status_code=500, detail=f"Authentication error: {str(e)}")
+        logger.exception("Authentication error during Google OAuth login")
+        raise HTTPException(status_code=500, detail="Authentication service unavailable")

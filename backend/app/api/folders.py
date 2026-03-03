@@ -1,7 +1,7 @@
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.services import folder_service, project_service
 
@@ -14,7 +14,7 @@ class FolderContentsResponse(BaseModel):
 
 
 class CreateFolderRequest(BaseModel):
-    name: str
+    name: str = Field(min_length=1)
     parent_id: Optional[str] = None
 
 
@@ -29,6 +29,13 @@ class UpdateFolderRequest(BaseModel):
 
 def _status_code_for_value_error(error: ValueError, default: int = 400) -> int:
     return 404 if "not found" in str(error).lower() else default
+
+
+def _normalize_folder_name(name: str) -> str:
+    normalized = name.strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Folder name cannot be empty")
+    return normalized
 
 
 @router.get("/tree", response_model=List[folder_service.FolderTreeItem])
@@ -48,7 +55,10 @@ async def get_folder_contents(folder_id: Optional[str] = Query(default=None)):
 @router.post("/", response_model=folder_service.Folder)
 async def create_folder(request: CreateFolderRequest):
     try:
-        return folder_service.create_folder(name=request.name, parent_id=request.parent_id)
+        return folder_service.create_folder(
+            name=_normalize_folder_name(request.name),
+            parent_id=request.parent_id,
+        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
 
@@ -59,7 +69,7 @@ async def update_folder(folder_id: str, request: UpdateFolderRequest):
     if "name" not in field_set and "parent_id" not in field_set:
         raise HTTPException(status_code=400, detail="No update fields provided")
 
-    name = request.name if "name" in field_set else None
+    name = _normalize_folder_name(request.name) if "name" in field_set and request.name is not None else request.name
     parent_id = request.parent_id if "parent_id" in field_set else folder_service.UNSET
 
     try:
