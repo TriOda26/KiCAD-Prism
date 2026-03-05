@@ -34,6 +34,7 @@ interface Project {
     display_name?: string;
     description: string;
     path: string;
+    folder_id?: string | null;
     last_modified: string;
 }
 
@@ -236,6 +237,14 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
         { id: "documentation" as Section, label: "Documentation", icon: FileText },
     ];
 
+    const handleBackNavigation = () => {
+        if (project.folder_id) {
+            navigate(`/?folder=${encodeURIComponent(project.folder_id)}`);
+            return;
+        }
+        navigate("/");
+    };
+
     return (
         <div className="h-screen flex flex-col bg-background">
             <header className="border-b px-4 md:px-6 py-4 flex items-center gap-4">
@@ -277,7 +286,7 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
                     </SheetContent>
                 </Sheet>
 
-                <Button variant="ghost" size="sm" onClick={() => navigate("/")} className="hidden md:flex">
+                <Button variant="ghost" size="sm" onClick={handleBackNavigation} className="hidden md:flex">
                     <ArrowLeft className="h-4 w-4 mr-2" />
                     Back
                 </Button>
