@@ -188,6 +188,91 @@ class LibraryFolderImportTests(unittest.TestCase):
             )
             self.assertFalse(proposal["findings"])
 
+    def test_repeated_symbol_copies_merge_into_one_proposal(self) -> None:
+        """A shared symbol copied across library folders is one component.
+
+        Real libraries keep a copy of a common part such as Device/R.kicad_sym
+        beside every assembly that uses it. Those copies are byte-identical, so
+        they produce one dedupe key, and staging writes proposals under a UNIQUE
+        (session_id, dedupe_key) constraint. Without merging, the second copy
+        aborts the entire import.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            symbol = root / "R.kicad_sym"
+            symbol.write_text(
+                '(kicad_symbol_lib (version 20231120) (generator "test") '
+                '(symbol "R" (property "Value" "R")))',
+                encoding="utf-8",
+            )
+
+            objects: dict[str, Path] = {}
+            digest = hashlib.sha256(symbol.read_bytes()).hexdigest()
+            objects[digest] = symbol
+            # The same file discovered under three library folders.
+            files = [
+                {
+                    "relative_path": relative_path,
+                    "sha256": digest,
+                    "size_bytes": symbol.stat().st_size,
+                    "object_path": str(symbol),
+                }
+                for relative_path in (
+                    "symbols/Device/R.kicad_sym",
+                    "symbols/R1206/R.kicad_sym",
+                    "symbols/HCM1212A/R.kicad_sym",
+                )
+            ]
+
+            def put_stream(stream: object, **_kwargs: object) -> SimpleNamespace:
+                payload = stream.read()  # type: ignore[attr-defined]
+                stored = hashlib.sha256(payload).hexdigest()
+                path = root / "objects" / stored
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(payload)
+                objects[stored] = path
+                return SimpleNamespace(sha256=stored, size_bytes=len(payload), path=path)
+
+            def materialize(stored: str, destination: Path) -> Path:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(objects[stored], destination)
+                return destination
+
+            fake_store = SimpleNamespace(
+                get_snapshot=lambda _snapshot_id: {
+                    "id": "snapshot-1",
+                    "status": "ready",
+                    "manifest_sha256": "manifest-1",
+                },
+                snapshot_files=lambda _snapshot_id: files,
+                put_stream=put_stream,
+                materialize=materialize,
+            )
+            service = ComponentCatalogDomainService.__new__(ComponentCatalogDomainService)
+            service._store_root = root / "catalog"  # type: ignore[attr-defined]
+            service._store_root.mkdir(parents=True, exist_ok=True)  # type: ignore[attr-defined]
+            with (
+                mock.patch("app.services.library_folder_import_service.artifact_store", fake_store),
+                mock.patch("app.services.library_folder_import_service.catalog_service", service),
+            ):
+                proposals = build_folder_proposals("snapshot-1", "session-1")
+
+            self.assertEqual(len(proposals), 1)
+            self.assertEqual(
+                len({proposal["dedupe_key"] for proposal in proposals}),
+                len(proposals),
+                "staging requires dedupe keys to be unique within a session",
+            )
+            # Every location is retained as evidence of where the symbol came from.
+            self.assertEqual(
+                sorted(item["symbolPath"] for item in proposals[0]["provenance"]),
+                [
+                    "symbols/Device/R.kicad_sym",
+                    "symbols/HCM1212A/R.kicad_sym",
+                    "symbols/R1206/R.kicad_sym",
+                ],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

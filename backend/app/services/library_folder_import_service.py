@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.services.component_catalog_service import catalog_service
 from app.services.local_artifact_store import artifact_store
 from app.services.kicad_library_discovery import discover_library, footprint_name_from_text
+from app.services.project_component_import_service import _merge_proposal
 
 
 SUPPORTED_SUFFIXES = {
@@ -202,7 +203,13 @@ def build_folder_proposals(
         footprints.setdefault(name.casefold(), enriched)
         footprints.setdefault(fallback_name.casefold(), enriched)
 
-    proposals: list[dict[str, Any]] = []
+    # Keyed by dedupe key: a library folder legitimately holds the same symbol in
+    # several places (a shared Device/R.kicad_sym copied next to each part that
+    # uses it), and identical copies collapse to one identity. Proposals are
+    # persisted under a UNIQUE (session_id, dedupe_key) constraint, so duplicates
+    # have to be merged here the way a project harvest already merges repeated
+    # placements -- otherwise the whole import aborts on the second copy.
+    grouped: dict[str, dict[str, Any]] = {}
     for source in files:
         if source["suffix"] != ".kicad_sym":
             continue
@@ -321,7 +328,7 @@ def build_folder_proposals(
                             )
                         )
             identity = [manufacturer.casefold(), mpn.casefold()] if manufacturer and mpn else [library, symbol_name, symbol_artifact["sha256"]]
-            proposals.append({
+            candidate = {
                 "dedupe_key": hashlib.sha256("\0".join(identity).encode("utf-8")).hexdigest(),
                 "reference": symbol_name,
                 "metadata": {
@@ -343,8 +350,13 @@ def build_folder_proposals(
                     "symbolPath": str(source["relative_path"]),
                 }],
                 "findings": findings,
-            })
-    return proposals
+            }
+            existing = grouped.get(candidate["dedupe_key"])
+            if existing:
+                _merge_proposal(existing, candidate)
+            else:
+                grouped[candidate["dedupe_key"]] = candidate
+    return list(grouped.values())
 
 
 def run_folder_import_session(
